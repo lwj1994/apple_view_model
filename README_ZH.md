@@ -2,6 +2,8 @@
 
 简体中文 · See [README.md](./README.md) for full documentation.
 
+> 📖 更新历史请看 [CHANGELOG](./CHANGELOG.md) · 下载页：[GitHub Releases](https://github.com/lwj1994/apple_view_model/releases)
+
 **AppleViewModel 本质上是一个 DI 框架**，为 Apple 平台提供组件级依赖注入，默认无缝集成 SwiftUI 与 UIKit。从 Flutter 包 [`view_model`](https://github.com/lwj1994/flutter_view_model) 移植而来。
 
 核心理念：**任何东西都可以写成 `ViewModel` 形式**——业务状态、Repository、网络服务、全局 Store……继承 `ViewModel` + 通过 `ViewModelSpec` 注册，就能在模块之间互相复用、引用、注入。
