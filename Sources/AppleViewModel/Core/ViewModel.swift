@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// Base class for business ViewModels, equivalent to the Dart `mixin ViewModel`.
 ///
@@ -11,11 +12,15 @@ import Foundation
 ///   a `TaskLocal` (the Swift analogue of the Dart `Zone` used by the original
 ///   package).
 ///
+/// Every `ViewModel` is also a SwiftUI `ObservableObject`: `notifyListeners()`
+/// emits `objectWillChange` before fanning out to the internal listener list,
+/// so instances can be handed directly to `@StateObject` / `@ObservedObject`.
+///
 /// Instances are typically created by a `ViewModelBinding` via a
 /// `ViewModelSpec`. Static entry points (`ViewModel.initialize`,
 /// `ViewModel.readCached`) are provided for app-wide setup and lookup.
 @MainActor
-open class ViewModel: InstanceLifeCycle {
+open class ViewModel: InstanceLifeCycle, ObservableObject {
     // MARK: - Global configuration
 
     private static var _lifecycles: [any ViewModelLifecycle] = []
@@ -152,12 +157,16 @@ open class ViewModel: InstanceLifeCycle {
 
     /// Fan out a change notification to all subscribers.
     ///
+    /// Also emits `objectWillChange` so SwiftUI views holding the instance via
+    /// `@StateObject` / `@ObservedObject` re-render on the next run loop tick.
+    ///
     /// After the instance has been disposed this is a no-op (logged at debug level).
     public func notifyListeners() {
         if isDisposed {
             viewModelLog("\(type(of: self)): notifyListeners after Disposed")
             return
         }
+        objectWillChange.send()
         // Snapshot first so callbacks can add / remove listeners without breaking iteration.
         let snapshot = Array(listeners.values)
         for listener in snapshot {

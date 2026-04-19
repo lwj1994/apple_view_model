@@ -50,3 +50,6 @@ iOSInjectionProject/
 *.swp
 *.swo
 *~
+
+# AI tooling (oh-my-claudecode local cache)
+.omc/

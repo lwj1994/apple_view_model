@@ -15,16 +15,26 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-19
+
+### Changed
+
+- `ViewModel` 本身现在直接实现 `ObservableObject`，`notifyListeners()` 会自动触发 `objectWillChange.send()`——所有 VM 都可以直接塞进 SwiftUI `@StateObject` / `@ObservedObject`。
+- 文档重新定位：README / SKILL / AGENTS 把本包描述为 **Apple 平台的 DI 框架（Service 注册式）**，默认集成 SwiftUI + UIKit，强调 "任何东西都可以写成 ViewModel" 和模块间互相注入能力。
+
+### Removed
+
+- **破坏性**：移除 `ObservableViewModel` 基类（以及弃用别名 `ChangeNotifierViewModel`）。原先提供的能力已下沉到 `ViewModel`。迁移路径：把所有 `: ObservableViewModel` 改成 `: ViewModel` 即可，API 行为一致。
+
 ## [0.1.0] - 2026-04-18
 
 首次发布。从 Flutter 包 [`view_model`](https://github.com/lwj1994/flutter_view_model) 移植到 Apple 平台。
 
 ### Added
 
-- **Core 三件套**
+- **Core 两件套**
   - `ViewModel`：基础基类，提供 `listen` / `notifyListeners` / `update` / `addDispose` 和生命周期钩子（`onCreate` / `onBind` / `onUnbind` / `onDispose`）。
   - `StateViewModel<State>`：不可变 state 管理，`setState` / `listenState` / `listenStateSelect`，相等判断支持实例级 / 全局 / 默认三级策略。
-  - `ObservableViewModel`：同时实现 `ObservableObject`，可直接塞进 SwiftUI `@StateObject`。
 - **Spec / Factory**
   - `ViewModelSpec<T>`：零参工厂声明。
   - `ViewModelSpecWithArg1..4`：1–4 个参数的工厂，`callAsFunction` 应用参数生成子 spec。

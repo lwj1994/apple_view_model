@@ -1,10 +1,16 @@
 # AppleViewModel
 
-从 Flutter 包 [`view_model`](https://github.com/lwj1994/flutter_view_model) 移植而来的 Apple 平台组件级 ViewModel 框架。基于 `@TaskLocal` 做 DI、基于引用计数做生命周期、基于 `@StateObject` / `objectWillChange` 桥到 SwiftUI。
+**AppleViewModel 本质上是一个 DI（依赖注入）框架**，为 Apple 平台提供组件级依赖管理能力，默认无缝集成 SwiftUI 与 UIKit。从 Flutter 包 [`view_model`](https://github.com/lwj1994/flutter_view_model) 移植而来。
 
-- **平台**：当前为 iOS 16+。Core 不依赖 UIKit，macOS / tvOS / watchOS / visionOS 已在 `Package.swift` 里预留，UIKit 相关文件用 `#if canImport(UIKit)` 自动裁剪。
-- **Swift**：要求 Swift 6.0+，全包启用 Swift 6 language mode 和严格并发。
-- **UI 集成**：SwiftUI（`@WatchViewModel` / `@ReadViewModel` / `ViewModelBuilder` / `ObserverBuilder` / `StateViewModelValueWatcher`）+ Objective-C 对象宿主（`NSObject.viewModelBinding`，`UIViewController` / `UIView` 等都可直接用）。
+核心理念：**任何东西都可以写成 `ViewModel` 的形式**——业务状态、Repository、网络服务、工具 Store、页面控制器……只要继承 `ViewModel` 并通过 `ViewModelSpec` 注册，就能跨模块互相复用、互相引用、互相 DI。
+
+- **Service 注册式 DI**：用 `ViewModelSpec` 声明 "怎么建 / 按什么 key 共享 / 要不要永驻"，通过 `binding.watch(spec)` / `binding.read(spec)` 获取实例；VM 内部还能用 `viewModelBinding.watch(otherSpec)` 拿到别的 VM，天然支持 VM-to-VM 依赖。
+- **生命周期自动化**：每个宿主对应一个 `ViewModelBinding`，内部按引用计数管理实例——宿主释放时自动 `dispose`，无需手写清理代码。
+- **默认双端 UI 集成**：
+  - SwiftUI：`@WatchViewModel` / `@ReadViewModel` / `ViewModelBuilder` / `ObserverBuilder` / `StateViewModelValueWatcher`；`ViewModel` 本身就是 `ObservableObject`，可直接塞进 `@StateObject`。
+  - UIKit / AppKit 风格对象图：`NSObject.viewModelBinding`，`UIViewController` / `UIView` / 自定义 `NSObject` 宿主都可直接用，关联对象在宿主释放时自动 dispose。
+- **平台**：iOS 16+ 为主要目标；Core 不依赖 UIKit，macOS / tvOS / watchOS / visionOS 已在 `Package.swift` 里预留，UIKit 相关文件用 `#if canImport(UIKit)` 自动裁剪。
+- **Swift**：要求 Swift 6.0+，全包启用 Swift 6 language mode 和严格并发。所有对外 API 统一 `@MainActor`。
 
 ## 安装
 
@@ -20,15 +26,18 @@ Swift Package Manager：
 
 ## 三件套
 
-### 1. ViewModel
+AppleViewModel 的 DI 模型是：**Service（ViewModel）+ 注册声明（Spec）+ 容器宿主（Binding）**。只要理解这三件套，就能把任何东西接进来当作可注入的服务使用。
 
-业务 ViewModel 继承三选一：
+### 1. ViewModel —— Service 本体
+
+继承二选一。无论哪个都是 `ObservableObject`，可直接塞进 SwiftUI `@StateObject`：
 
 | 基类 | 用途 |
 | --- | --- |
-| `ViewModel` | 最轻量，拿 `listen` / `notifyListeners` / `update` 就够了 |
+| `ViewModel` | 最轻量，拿 `listen` / `notifyListeners` / `update` 就够了；也适合做纯服务（Repository / Network / Cache 等） |
 | `StateViewModel<State>` | 管理不可变 state，附带 `setState` / `listenState` / `listenStateSelect` |
-| `ObservableViewModel` | 同时是 `ObservableObject`，可直接塞进 `@StateObject`（原 `ChangeNotifierViewModel` 已 typealias 保留向后兼容） |
+
+> 💡 任何你想跨模块共享的东西——AuthService、ThemeStore、页面 ViewModel、甚至一个全局 Logger——都可以写成 `ViewModel` 子类，然后像服务一样注册。
 
 ```swift
 struct CounterState: Equatable {
@@ -46,18 +55,18 @@ final class CounterViewModel: StateViewModel<CounterState> {
 }
 ```
 
-### 2. Spec
+### 2. ViewModelSpec —— Service 注册
 
-工厂声明——告诉系统怎么建、怎么共享：
+把 VM 当服务注册到系统里——告诉框架**怎么建、按什么 key 共享、要不要永驻**。Spec 通常写成模块级 `let`，就是这个服务的"地址":
 
 ```swift
-// 普通 spec
+// 普通 spec：默认每个 binding 新建一份
 let counterSpec = ViewModelSpec<CounterViewModel> { CounterViewModel() }
 
-// 全局共享，永不销毁
+// 全局共享服务：相同 key 的 spec 在任何 binding 都拿同一实例；aliveForever 表示进程内常驻
 let authSpec = ViewModelSpec<AuthViewModel>(key: "auth", aliveForever: true) { AuthViewModel() }
 
-// 带参数；相同参数共享同一实例
+// 带参数的 spec：按参数 key 区分实例，同参数共享
 let userSpec = ViewModelSpecWithArg<UserViewModel, String>(
     builder: { UserViewModel(userId: $0) },
     key: { "user-\($0)" }
@@ -65,9 +74,11 @@ let userSpec = ViewModelSpecWithArg<UserViewModel, String>(
 // 使用：binding.watch(userSpec("abc"))
 ```
 
-### 3. Binding
+Spec 还支持 `setProxy` / `clearProxy`——测试时把注册实现临时换成 mock。
 
-任何"想用 VM 的地方"都是 binding。SwiftUI 和 UIKit 都有现成的桥。
+### 3. ViewModelBinding —— 容器 / 宿主
+
+任何"想用 VM 的地方"都持有一个 binding，它就是这次作用域里的 DI 容器。SwiftUI 和 UIKit 都有现成的桥，你也可以手动创建一个用于纯 Swift / 测试。
 
 #### SwiftUI
 
@@ -124,7 +135,7 @@ binding.dispose()  // 引用计数归零，VM 自动销毁
 | `mixin ViewModel` | `open class ViewModel` | Swift 没 mixin，改用继承；仍可组合多个 protocol 实现 |
 | `mixin class ViewModelBinding` | `open class ViewModelBinding` | 子类化替代 mixin |
 | `StateViewModel<T>` | `StateViewModel<State>` | `setState` 的相等判断优先级：实例级 equals > 全局 config.equals > 引用相等（类对象） |
-| `ChangeNotifier` + `Listenable` | `ObservableViewModel` + `ObservableObject` | Combine 驱动 SwiftUI |
+| `ChangeNotifier` + `Listenable` | `ViewModel`（自带 `ObservableObject`） | Combine 驱动 SwiftUI |
 | `ViewModelFactory` / `ViewModelSpec.arg…` | `ViewModelFactory` / `ViewModelSpecWithArg1..4` | arg 版本用 `callAsFunction` 应用参数 |
 | `InstanceManager` / `Store<T>` / `InstanceHandle` | 同名 | 按 `ObjectIdentifier(T.self)` 分桶；handle 维护 `bindingIds` 列表 |
 | Zone-based DI | `@TaskLocal static var current: ViewModelBinding?` | VM 构造期通过 `ViewModelBinding.$current.withValue(self)` 提供上下文 |
@@ -171,19 +182,24 @@ struct MyApp: App {
 
 所有 `*Cached` 变体找不到就抛错；对应的 `maybe*Cached` 返回 nil。
 
-## VM 内部访问其它 VM
+## VM-to-VM 依赖：模块间互相注入
 
-继承 `ViewModel` 就自带 `viewModelBinding`，内部用 `@TaskLocal` 解析到父 binding。
+DI 框架最核心的能力——**一个 ViewModel 里注入另一个 ViewModel**。继承 `ViewModel` 就自带 `viewModelBinding`，内部用 `@TaskLocal` 解析到"创建它的那个 binding"。所以只要对方已经按 spec 注册过，这里就能直接拿到它。
 
 ```swift
+// 模块 A 注册一个服务
+let authSpec = ViewModelSpec<AuthViewModel>(key: "auth", aliveForever: true) { AuthViewModel() }
+
+// 模块 B 注册业务 VM，里面注入模块 A 的服务
 @MainActor
 final class OrderViewModel: ViewModel {
+    // read：只用不订阅刷新；watch：订阅，别人变了我 notify
     lazy var auth: AuthViewModel = viewModelBinding.read(authSpec)
     lazy var cart: CartViewModel = viewModelBinding.watch(cartSpec)
 }
 ```
 
-父 binding dispose → 通过它创建的 VM 若没有别的引用，也一起 dispose。
+这样模块 A / B / C 可以各自独立开发、各自 export 自己的 spec；使用方在最外层的 binding 里拼装即可。引用计数自动管理生命周期：父 binding dispose → 通过它创建的 VM 若没有别的引用，也一起 dispose。
 
 ## 细粒度重建
 

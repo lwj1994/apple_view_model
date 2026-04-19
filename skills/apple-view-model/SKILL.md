@@ -1,35 +1,38 @@
 ---
 name: apple-view-model
-description: 在 Swift 6 项目里使用 AppleViewModel（iOS / macOS / tvOS / watchOS / visionOS 的组件级 ViewModel 框架）时触发。涵盖 ViewModel / StateViewModel / ObservableViewModel 三件套、ViewModelSpec 工厂声明、SwiftUI 绑定（@WatchViewModel / @ReadViewModel / ViewModelBuilder / ObserverBuilder）、UIKit 绑定（NSObject.viewModelBinding）、VM-to-VM 依赖、Pause/Resume、以及测试 mock 写法。
+description: 在 Swift 6 项目里使用 AppleViewModel（iOS / macOS / tvOS / watchOS / visionOS 的组件级 ViewModel 框架）时触发。涵盖 ViewModel / StateViewModel 两件套（ViewModel 本身就是 ObservableObject）、ViewModelSpec 工厂声明、SwiftUI 绑定（@WatchViewModel / @ReadViewModel / ViewModelBuilder / ObserverBuilder）、UIKit 绑定（NSObject.viewModelBinding）、VM-to-VM 依赖、Pause/Resume、以及测试 mock 写法。
 ---
 
 # AppleViewModel Skill
 
-[lwj1994/apple_view_model](https://github.com/lwj1994/apple_view_model)：从 Flutter `view_model` 移植到 Apple 的组件级 ViewModel 框架，Swift 6 严格并发，SwiftUI + UIKit 双端桥。
+[lwj1994/apple_view_model](https://github.com/lwj1994/apple_view_model)：**Apple 平台的 DI（依赖注入）框架**，默认集成 SwiftUI + UIKit，Swift 6 严格并发。从 Flutter `view_model` 移植。
+
+**核心思想**：任何东西（业务状态、Repository、网络服务、全局 Store 等）都可以写成 `ViewModel` 形式，通过 `ViewModelSpec` 以 **Service 注册**的方式声明，然后在模块之间互相复用、引用、互相注入。宿主生命周期 + 引用计数自动管理销毁——不用写 `dispose` 样板。
 
 ## 何时使用本 skill
 
 - 代码里出现 `import AppleViewModel` 或 `ViewModelSpec` / `@WatchViewModel` / `StateViewModel`
-- 用户问 "AppleViewModel 怎么写 XXX" / "怎么在 SwiftUI 里绑定 VM" / "VM 之间依赖注入"
-- 需要在 iOS 项目里实现「组件化 VM + 引用计数生命周期 + 共享实例」这套架构
+- 用户问 "AppleViewModel 怎么写 XXX" / "怎么在 SwiftUI 里绑定 VM" / "VM 之间依赖注入" / "怎么注册一个共享服务"
+- 需要在 iOS 项目里实现「组件化 DI + 共享服务 + 自动生命周期」这套架构
 - 编写或 review 使用本框架的单元测试
 
 ## 心智模型（一页速查）
 
 ```
-ViewModelSpec    ┐
-                 │ 工厂：告诉系统怎么建、按什么 key 共享
-ViewModelFactory ┘
-         │
-         ▼
-ViewModelBinding ──── 宿主（SwiftUI / UIKit / 自定义）持有它，负责引用计数
-         │
-         ▼
-ViewModel（子类三选一）
-    ├── ViewModel                —— 基础，listen/notifyListeners/update
-    ├── StateViewModel<State>    —— 不可变 state + setState
-    └── ObservableViewModel      —— 同时是 ObservableObject，可配 @StateObject
+                [Service 注册式 DI]
+
+ViewModelSpec      ——  服务注册声明（怎么建 / 按什么 key 共享 / 要不要永驻）
+      │                模块级 `let`，就像 service locator 的 key
+      ▼
+ViewModelBinding   ——  DI 容器 / 宿主（SwiftUI / UIKit / 自定义 NSObject）
+      │                引用计数自动管理实例销毁
+      ▼
+ViewModel（子类二选一；本身就是 ObservableObject）
+    ├── ViewModel                —— 基础：listen/notifyListeners/update；也适合做纯 Service
+    └── StateViewModel<State>    —— 带不可变 state，附 setState / listenState 等
 ```
+
+> 💡 "ViewModel" 这个名字是历史包袱——它**不局限于 MVVM 里的那个 VM**。AuthService、ThemeStore、一个缓存器，只要你想跨模块共享 / 注入，都可以继承 `ViewModel` 然后当服务注册。
 
 **三个不变式**
 
@@ -43,7 +46,7 @@ ViewModel（子类三选一）
 | --- | --- | --- |
 | 只需要事件通知（"更新了"） | `ViewModel` | `listen` / `notifyListeners` / `update { … }` |
 | 管理一坨不可变状态 | `StateViewModel<State>` | `setState(_:)` / `listenState` / `listenStateSelect` |
-| SwiftUI 里用 `@StateObject` | `ObservableViewModel` | 上面两者 + 自动 `objectWillChange.send()` |
+| SwiftUI 里用 `@StateObject` | `ViewModel`（或 `StateViewModel<State>`） | 本身就是 `ObservableObject`，`notifyListeners()` 自动 `objectWillChange.send()` |
 
 ## 标准写法片段（逐条可复用）
 
@@ -146,20 +149,26 @@ let authSpec = ViewModelSpec<AuthViewModel>(
 
 任何 binding `watch/read` 这个 spec 都拿到同一个 `AuthViewModel`，且它永不销毁。
 
-### 6. VM 之间依赖注入
+### 6. VM 之间互相依赖注入（DI 核心能力）
 
-子 VM 自带 `viewModelBinding`，内部通过 `@TaskLocal` 解析到"创建它的那个 binding"。
+这是 AppleViewModel 最关键的一项：**一个 VM 内部直接注入另一个 VM / 服务**。子 VM 自带 `viewModelBinding`，内部通过 `@TaskLocal` 解析到"创建它的那个 binding"，所以只要目标 spec 已注册，就能拿到实例。
 
 ```swift
+// 模块 A：注册服务
+let authSpec = ViewModelSpec<AuthViewModel>(key: "auth", aliveForever: true) { AuthViewModel() }
+let cartSpec = ViewModelSpec<CartViewModel>(key: "cart") { CartViewModel() }
+
+// 模块 B：业务 VM 里注入别人 export 的服务
 @MainActor
 final class OrderViewModel: ViewModel {
     // lazy：构造完才访问，避免 init 期间循环
+    // read：只用不订阅；watch：会跟随对方 notify
     lazy var auth: AuthViewModel = viewModelBinding.read(authSpec)
     lazy var cart: CartViewModel = viewModelBinding.watch(cartSpec)
 }
 ```
 
-父 binding dispose 时，如果 cart 没被别人持有，它也一起 dispose。
+模块化收益：模块 A / B / C 各自 export 自己的 spec，使用方在外层 binding 拼装；测试时用 `setProxy` 换成 mock，不用改下游代码。父 binding dispose 时，如果 cart 没被别人持有，它也一起 dispose——引用计数自动收尾。
 
 ### 7. 配置入口（App 启动时装一次）
 
@@ -254,15 +263,12 @@ func test_with_mock() {
 ## 基类选择决策树
 
 ```
-需要 ObservableObject（配 @StateObject / @ObservedObject）？
-├── 是 → ObservableViewModel
-└── 否
-    ├── 需要管理一份不可变 state？
-    │   ├── 是 → StateViewModel<State>
-    │   └── 否 → ViewModel
+需要管理一份不可变 state？
+├── 是 → StateViewModel<State>
+└── 否 → ViewModel
 ```
 
-SwiftUI 新代码推荐用 `StateViewModel<S>` + `@WatchViewModel`；只有确实要 Combine `@Published` 语义才上 `ObservableViewModel`。
+`ViewModel` 本身就是 `ObservableObject`——`notifyListeners()` 会自动发 `objectWillChange`，可以直接塞进 `@StateObject` / `@ObservedObject`。SwiftUI 新代码推荐用 `StateViewModel<S>` + `@WatchViewModel`。
 
 ## 平台支持
 

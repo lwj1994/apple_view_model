@@ -5,8 +5,9 @@
 ///
 /// ## Three pieces to learn
 ///
-/// 1. **`ViewModel` / `StateViewModel<State>` / `ObservableViewModel`**
-///    — subclass one to define a VM.
+/// 1. **`ViewModel` / `StateViewModel<State>`**
+///    — subclass one to define a VM. Every `ViewModel` is also an `ObservableObject`,
+///    so instances drop straight into SwiftUI `@StateObject` / `@ObservedObject`.
 /// 2. **`ViewModelSpec` / `ViewModelSpecWithArg…`**
 ///    — declare how the VM is built and whether instances are shared.
 /// 3. **`ViewModelBinding` / `@WatchViewModel` / `NSObject.viewModelBinding`**

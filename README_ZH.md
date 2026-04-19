@@ -2,12 +2,14 @@
 
 简体中文 · See [README.md](./README.md) for full documentation.
 
-从 Flutter 包 [`view_model`](https://github.com/lwj1994/flutter_view_model) 移植而来的 Apple 平台组件级 ViewModel 框架。
+**AppleViewModel 本质上是一个 DI 框架**，为 Apple 平台提供组件级依赖注入，默认无缝集成 SwiftUI 与 UIKit。从 Flutter 包 [`view_model`](https://github.com/lwj1994/flutter_view_model) 移植而来。
 
-- 基于 `@TaskLocal` 做 VM 之间的依赖注入；
-- 基于引用计数管理实例生命周期；
-- 通过 SwiftUI `@StateObject` + Combine `ObservableObject.objectWillChange` 驱动视图更新；
-- 所有对外 API 统一 `@MainActor`。
+核心理念：**任何东西都可以写成 `ViewModel` 形式**——业务状态、Repository、网络服务、全局 Store……继承 `ViewModel` + 通过 `ViewModelSpec` 注册，就能在模块之间互相复用、引用、注入。
+
+- **Service 注册式 DI**：`ViewModelSpec` 声明注册规则，`binding.watch` / `binding.read` 获取实例；VM 内部用 `viewModelBinding` 拿别的 VM，天然 VM-to-VM 依赖。
+- **生命周期自动化**：引用计数驱动，宿主释放时自动 dispose。
+- **默认双端 UI**：SwiftUI（`@WatchViewModel` 等）+ UIKit（`NSObject.viewModelBinding`）。`ViewModel` 本身就是 `ObservableObject`，直接塞进 `@StateObject` 即可。
+- 所有对外 API 统一 `@MainActor`，Swift 6 严格并发。
 
 ## 快速上手
 

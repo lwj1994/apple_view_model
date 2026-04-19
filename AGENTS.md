@@ -10,7 +10,7 @@
 
 ```
 Sources/AppleViewModel/
-├── Core/          ViewModel / StateViewModel / ObservableViewModel、Spec / SpecArg、Config（含 ViewModelGlobalConfig）、Error、InstanceArg、Log
+├── Core/          ViewModel / StateViewModel、Spec / SpecArg、Config（含 ViewModelGlobalConfig）、Error、InstanceArg、Log
 ├── Registry/      Store<T>、InstanceHandle、InstanceManager、InstanceFactory、AutoDisposeInstanceController
 ├── Binding/       ViewModelBinding、HostedViewModelBinding、ViewModelBindingHandler、
 │                  PauseAwareController、PauseProvider (+ Providers/)
