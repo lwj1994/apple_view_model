@@ -4,6 +4,19 @@ All notable changes to AppleViewModel will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.3.1] - 2026-04-29
+
+### Added
+
+- Add SPDX license identifier (`Apache-2.0`) and copyright notice to `Package.swift` and module entry point.
+- Add Swift Package Index (SPI) and release version badges to README.
+
+### Changed
+
+- Rename skills directory from `apple_view_model` to `apple-view-model`.
+
 ## [0.3.0] - 2026-04-29
 
 Ships a listener-cleanup fix for `StateViewModelValueWatcher` and renames an internal parameter for clarity. Pure quality release — no API surface changes beyond the platform floor.

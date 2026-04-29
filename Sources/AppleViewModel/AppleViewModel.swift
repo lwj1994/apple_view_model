@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 luwenjie (Echoingtech)
+//
 /// # AppleViewModel
 ///
 /// Apple-native port of the Flutter package
