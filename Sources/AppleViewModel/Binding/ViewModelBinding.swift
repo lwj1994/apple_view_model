@@ -117,7 +117,7 @@ open class ViewModelBinding {
 
     /// Batch fetch by tag, subscribing to each matched instance.
     public func watchCachesByTag<VM: ViewModel>(_ tag: AnyHashable) -> [VM] {
-        let vms: [VM] = instanceController.getInstancesByTag(VM.self, tag: tag, listen: true)
+        let vms: [VM] = instanceController.getInstancesByTag(VM.self, tag: tag, observeRecreate: true)
         for vm in vms { addListener(vm) }
         return vms
     }
@@ -125,7 +125,7 @@ open class ViewModelBinding {
     /// Batch fetch by tag without subscribing. Instances are still bound so lifecycle
     /// cleanup happens on dispose; recreation events are still observed.
     public func readCachesByTag<VM: ViewModel>(_ tag: AnyHashable) -> [VM] {
-        instanceController.getInstancesByTag(VM.self, tag: tag, listen: true)
+        instanceController.getInstancesByTag(VM.self, tag: tag, observeRecreate: true)
     }
 
     public func listen<VM: ViewModel>(

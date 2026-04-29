@@ -5,13 +5,6 @@ import PackageDescription
 
 let package = Package(
     name: "AppleViewModel",
-    // The primary target is iOS, but macOS / tvOS / watchOS / visionOS are
-    // declared as well so that:
-    //   1. `swift test` runs natively on Mac for CI and local development.
-    //   2. The Core layer has no UIKit dependency, so expanding to the rest
-    //      of the Apple family is essentially free.
-    //   3. UIKit-only files are guarded with `#if canImport(UIKit)`, so
-    //      native macOS builds simply skip them.
     platforms: [
         .iOS(.v16),
         .macOS(.v13),

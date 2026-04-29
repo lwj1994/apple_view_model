@@ -37,5 +37,5 @@
 /// }
 /// ```
 ///
-/// See `README.md` for the full guide and cross-reference to the Dart package.
+/// See `README.md`.
 @_exported import Foundation

@@ -45,11 +45,11 @@ final class AutoDisposeInstanceController {
     }
 
     /// Batch lookup by tag. Each matched handle is bound and tracked; when
-    /// `listen` is true we also install a recreate observer.
+    /// `observeRecreate` is true we also install a recreate observer.
     func getInstancesByTag<Value: AnyObject>(
         _ type: Value.Type,
         tag: AnyHashable,
-        listen: Bool
+        observeRecreate: Bool
     ) -> [Value] {
         let handles = InstanceManager.shared.getHandles(byTag: tag, type: type)
         var result: [Value] = []
@@ -58,7 +58,7 @@ final class AutoDisposeInstanceController {
             if let vm = handle.value as? ViewModel {
                 withInternal { vm.refHandler.addRef(binding) }
             }
-            if listen {
+            if observeRecreate {
                 attachRecreateListener(handle)
             } else {
                 // Even without a recreate listener we keep the handle referenced

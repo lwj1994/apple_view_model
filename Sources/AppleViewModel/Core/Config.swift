@@ -39,32 +39,20 @@ public struct ViewModelConfig: Sendable {
     }
 }
 
-/// Thread-safe, actor-agnostic storage for the framework's global configuration.
-///
-/// Reads dominate writes (writes happen once at `ViewModel.initialize` and
-/// possibly in tests), so an `OSAllocatedUnfairLock` is both cheap and correct.
-/// The lock lets `viewModelLog` and `reportViewModelError` run from any
-/// isolation domain — background tasks, `AsyncStream` termination handlers,
-/// `@Sendable onError` callbacks — without hopping to the main actor.
 @_spi(Internal)
 public enum ViewModelGlobalConfig {
-    private static let storage = OSAllocatedUnfairLock<ViewModelConfig>(
-        initialState: ViewModelConfig()
-    )
+    private static nonisolated(unsafe) var lock = OSAllocatedUnfairLock()
+    private static nonisolated(unsafe) var _current = ViewModelConfig()
 
-    /// Snapshot read. Cheap; safe to call from any actor.
     public static var current: ViewModelConfig {
-        storage.withLock { $0 }
+        lock.withLock { _current }
     }
 
-    /// Overwrite the global configuration. Safe to call from any actor; in
-    /// practice it is invoked from `ViewModel.initialize` on the main actor.
     public static func set(_ new: ViewModelConfig) {
-        storage.withLock { $0 = new }
+        lock.withLock { _current = new }
     }
 
-    /// Reset to defaults. Test-only helper.
     public static func reset() {
-        storage.withLock { $0 = ViewModelConfig() }
+        lock.withLock { _current = ViewModelConfig() }
     }
 }

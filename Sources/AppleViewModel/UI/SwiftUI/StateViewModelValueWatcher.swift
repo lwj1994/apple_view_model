@@ -71,28 +71,26 @@ private struct _ValueWatcherInner<State, Content: View>: View {
 
 @MainActor
 final class _ValueWatcherHost<State>: ObservableObject {
-    // Deliberately omitted: a cleanup `deinit` that detaches listeners.
-    //
-    // Swift 6's `deinit` is non-isolated by default, which makes it impossible
-    // to read `@MainActor` stored properties (including the non-Sendable
-    // `() -> Void` disposer closures). The compromise here is:
-    //
-    // * Every registered listener captures `[weak self]` — once the host is
-    //   released the callbacks become no-ops.
-    // * Orphaned listener closures remain attached to the backing
-    //   `StateViewModel` until it itself is disposed. In practice the VM and
-    //   the watcher share a host lifetime, so the leak window is negligible.
-    //
-    // For workloads that thrash watchers in tight loops, expose a manual
-    // cleanup and call it from `.onDisappear` — left to users by design.
+    /// `nonisolated(unsafe)` — only accessed on MainActor (`init`) and in
+    /// `deinit` (single-threaded, guaranteed sole remaining reference).
+    nonisolated(unsafe) private var disposers: [() -> Void] = []
+
     init(viewModel: StateViewModel<State>, selectors: [(State) -> AnyHashable]) {
         for selector in selectors {
-            _ = viewModel.listenStateSelect(
+            let d = viewModel.listenStateSelect(
                 selector: selector,
                 onChanged: { [weak self] _, _ in
                     self?.objectWillChange.send()
                 }
             )
+            disposers.append(d)
+        }
+    }
+
+    deinit {
+        let cleanup = disposers
+        Task { @MainActor in
+            cleanup.forEach { $0() }
         }
     }
 }
