@@ -144,5 +144,5 @@ iOS 16+ / macOS 13+ / tvOS 16+ / watchOS 9+ / visionOS 1+. Swift 6.0+.
 ## Installation
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.2.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.3.0")
 ```

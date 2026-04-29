@@ -23,7 +23,7 @@ Deployment target: **iOS 16+**. Swift 6 language mode with strict concurrency (`
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.2.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.3.0")
 ```
 
 Add `"AppleViewModel"` to your target dependencies.
@@ -33,7 +33,7 @@ Add `"AppleViewModel"` to your target dependencies.
 This repo includes a Claude Code skill that provides AppleViewModel API reference for AI-assisted coding:
 
 ```bash
-npx skills add https://github.com/lwj1994/apple_view_model --skill apple_view_model
+npx skills add https://github.com/lwj1994/apple_view_model --skill apple-view-model
 ```
 
 Once installed, Claude Code automatically recognizes and uses AppleViewModel API patterns.
