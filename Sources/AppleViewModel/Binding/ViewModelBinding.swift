@@ -235,8 +235,15 @@ open class ViewModelBinding {
     }
 
     /// Creates a ViewModel using the supplied factory inside a `TaskLocal` binding
-    /// context so that `viewModelBinding` references inside the VM's init resolve to
-    /// this binding.
+    /// context so that `viewModelBinding` references inside the VM's init **and**
+    /// `onCreate` resolve to this binding.
+    ///
+    /// The TaskLocal scope must wrap the whole `getInstance` call, not just
+    /// `factory.build()`: `InstanceHandle.init` invokes `onCreate` synchronously
+    /// after the builder returns, but `addRef(binding)` only happens once
+    /// `getInstance` returns. Without the outer wrap, `onCreate` would see an
+    /// empty `dependencyBindings` *and* a missing TaskLocal, causing
+    /// `viewModelBinding` access to trap.
     private func createViewModel<VM: ViewModel>(
         factory: any ViewModelFactory<VM>,
         listen: Bool
@@ -247,20 +254,15 @@ open class ViewModelBinding {
         let aliveForever = factory.aliveForever()
 
         let instanceFactory = InstanceFactory<VM>(
-            builder: { [weak self] in
-                guard let self else {
-                    preconditionFailure("Binding released during VM build")
-                }
-                return ViewModelBinding.$current.withValue(self) {
-                    factory.build()
-                }
-            },
+            builder: { factory.build() },
             arg: InstanceArg(key: key, tag: tag, aliveForever: aliveForever)
         )
 
         let vm: VM
         do {
-            vm = try instanceController.getInstance(VM.self, factory: instanceFactory)
+            vm = try ViewModelBinding.$current.withValue(self) {
+                try instanceController.getInstance(VM.self, factory: instanceFactory)
+            }
         } catch {
             preconditionFailure("ViewModel create failed: \(error)")
         }

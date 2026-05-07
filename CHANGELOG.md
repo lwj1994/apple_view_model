@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-07
+
+### Fixed
+
+- **`ViewModel.onCreate(_:)` could not access `viewModelBinding`.** `InstanceHandle.init` invokes `onCreate` synchronously after the builder returns but before `AutoDisposeInstanceController` injects the parent binding via `refHandler.addRef(...)`. Previously the `ViewModelBinding.$current` TaskLocal scope only wrapped `factory.build()`, so by the time `onCreate` ran neither `dependencyBindings` nor the TaskLocal was available — any `viewModelBinding.read(...)` / `viewModelBinding.watch(...)` call in `onCreate` trapped with "No binding available". The fix moves the `withValue(self)` scope to wrap the entire `instanceController.getInstance(...)` call in `ViewModelBinding.createViewModel`, so dependency resolution from inside `onCreate` now works the same way it does from `init()`.
+
+### Tests
+
+- Add `OnCreateBindingResolutionTests` (8 cases) covering: `read` / `watch` from `onCreate`, TaskLocal mechanism verification, `init`/`onCreate` resolution parity, parent-dispose cascade, nested `onCreate` dependency chains, shared cached instance fires `onCreate` once, and registry visibility from sibling bindings.
+
 ## [0.3.1] - 2026-04-29
 
 ### Added
