@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-05-11
+
+### Changed
+
+- **`viewModelBinding` resolution no longer uses `@TaskLocal`.** The previous mechanism wrapped construction in `ViewModelBinding.$current.withValue(self)` and relied on `@TaskLocal` propagation to surface the binding inside `init()` / `onCreate(_:)`. That made `viewModelBinding` access from `Task.detached`, old Combine sinks, UIKit target/action callbacks, and any other non-Task-inheriting context fragile during the construction window. The new mechanism:
+  - injects the parent binding into the VM's `refHandler` via `addRef(...)` *inside* the builder closure, immediately after `factory.build()` returns and *before* `InstanceHandle.init` invokes `onCreate(_:)`. From `onCreate` onward `viewModelBinding` reads from `dependencyBindings` and is no longer sensitive to execution context;
+  - replaces `@TaskLocal current` with a `@MainActor`-local stack pushed by `ViewModelBinding.withBuilding(_:_:)` for the duration of `factory.build()`. This is the only fallback path now, used solely while the VM's `init()` body is running.
+
+### Removed
+
+- **Breaking:** `ViewModelBinding.current` (the `@TaskLocal`) and the `_currentTaskLocal` SPI hook have been removed. Direct callers should migrate to `ViewModelBinding.currentBuilding` (SPI), but in practice no application code should be reading this — the binding is reachable through `viewModelBinding` from any point past the VM's `init()`.
+
+### Tests
+
+- Replace the TaskLocal-mechanism white-box test in `OnCreateBindingResolutionTests` with two cases: one that asserts `viewModelBinding` resolves correctly inside `onCreate`, and a new `Task.detached` regression that confirms a detached task spawned from `onCreate` still reaches the parent binding (the headline win of the new mechanism — TaskLocal would have lost the binding across the detach boundary).
+
 ## [0.3.2] - 2026-05-07
 
 ### Fixed

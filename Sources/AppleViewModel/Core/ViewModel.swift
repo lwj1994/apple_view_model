@@ -8,9 +8,8 @@ import Combine
 /// - listener registration and fan-out (`listen`, `notifyListeners`, `update`),
 /// - lifecycle hooks (`onCreate`, `onBind`, `onUnbind`, `onDispose`),
 /// - cleanup registration (`addDispose`),
-/// - access to the owning binding via `viewModelBinding`, which resolves through
-///   a `TaskLocal` (the Swift analogue of the Dart `Zone` used by the original
-///   package).
+/// - access to the owning binding via `viewModelBinding`, which the binding
+///   itself injects into the VM's `refHandler` immediately after construction.
 ///
 /// Every `ViewModel` is also a SwiftUI `ObservableObject`: `notifyListeners()`
 /// emits `objectWillChange` before fanning out to the internal listener list,
@@ -134,8 +133,12 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     /// Entry point used inside a ViewModel subclass to access other ViewModels.
     ///
     /// Resolution order (driven by `refHandler`):
-    /// 1. Parent binding injected by the registry when the VM was created.
-    /// 2. The binding stored in `ViewModelBinding.current` (a `@TaskLocal`).
+    /// 1. Parent binding stored on this VM by the registry. Available from the
+    ///    moment `factory.build()` returns — so `onCreate(_:)`, every regular
+    ///    method, `Task.detached`, Combine sinks, and UIKit callbacks all see it.
+    /// 2. `ViewModelBinding.currentBuilding` — fallback used only while the VM's
+    ///    own `init()` body is running (before the registry has had a chance to
+    ///    inject step 1).
     /// 3. Trap — using `viewModelBinding` outside any binding context is a programmer error.
     open var viewModelBinding: ViewModelBinding {
         refHandler.binding

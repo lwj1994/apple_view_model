@@ -9,8 +9,9 @@ final class DependencyInjectionTests: XCTestCase {
     }
 
     /// A VM that uses `viewModelBinding.read(...)` inside its initializer should
-    /// resolve to the binding that built it — this exercises the TaskLocal DI.
-    func test_vm_to_vm_dependency_resolves_through_taskLocal() {
+    /// resolve to the binding that built it — this exercises the
+    /// `withBuilding` construction-stack fallback used during `init()`.
+    func test_vm_to_vm_dependency_resolves_during_init() {
         let authSpec = ViewModelSpec<CounterViewModel>(
             key: "auth",
             aliveForever: true
@@ -21,7 +22,7 @@ final class DependencyInjectionTests: XCTestCase {
             override init() {
                 super.init()
                 // During construction, `viewModelBinding` must resolve to the
-                // outer binding via the TaskLocal set by `_createViewModel`.
+                // outer binding via `withBuilding`'s construction-stack fallback.
                 self.auth = viewModelBinding.read(Self.authSpec)
             }
             static var authSpec: ViewModelSpec<CounterViewModel>!

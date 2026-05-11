@@ -148,7 +148,7 @@ binding.dispose()  // reference count drops → VM auto-disposed
 
 ## VM-to-VM DI
 
-The core value of a DI framework: one ViewModel injecting another. Inherit `ViewModel` and you get `viewModelBinding`, which resolves to the binding that created this VM via `@TaskLocal`.
+The core value of a DI framework: one ViewModel injecting another. Inherit `ViewModel` and you get `viewModelBinding`, which resolves to the binding that created this VM. The binding is stored on the VM by its parent binding right after construction, so `viewModelBinding` is safe to use from anywhere on `@MainActor` — including `onCreate`, regular methods, `Task.detached`, Combine sinks, and UIKit target/action callbacks. The only fallback path (a per-thread construction stack) is used solely during the VM's own `init()` body.
 
 ```swift
 // Module A: register a service

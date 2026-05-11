@@ -17,16 +17,36 @@ import Foundation
 @MainActor
 open class ViewModelBinding {
 
-    // MARK: - TaskLocal dependency context
+    // MARK: - Construction-time dependency context
 
-    /// Current binding captured by the registry while a ViewModel is being built.
-    /// Equivalent to the Dart `runWithBinding` / `Zone.current[#view_model_binding]`
-    /// pattern — a builder running inside
-    /// `ViewModelBinding.$current.withValue(self) { … }` sees `self` on this key.
-    @TaskLocal public static var current: ViewModelBinding?
+    /// Stack of bindings currently building a ViewModel. The top of the stack is
+    /// the binding running `factory.build()` right now; once that build returns,
+    /// the binding is popped.
+    ///
+    /// Replaces the previous `@TaskLocal current`: the build chain is fully
+    /// synchronous and `@MainActor`-isolated, so a plain stack gives us the
+    /// "current builder" semantics without TaskLocal's surprising boundaries
+    /// (`Task.detached` not inheriting it, two unrelated Tasks each seeing
+    /// their own view, etc.).
+    private static var buildingStack: [ViewModelBinding] = []
 
-    /// Internal hook used by `ViewModelBindingHandler` to resolve the current binding.
-    @_spi(Internal) public static var _currentTaskLocal: ViewModelBinding? { current }
+    /// Top of the construction stack, or `nil` when no VM is being built.
+    /// Read by `ViewModelBindingHandler` as a fallback while a VM's `init()`
+    /// runs (before `refHandler.addRef(...)` has populated the handler).
+    @_spi(Internal) public static var currentBuilding: ViewModelBinding? {
+        buildingStack.last
+    }
+
+    /// Run `body` with `binding` pushed as the current builder. Pops on exit
+    /// (including via thrown errors).
+    @_spi(Internal) public static func withBuilding<R>(
+        _ binding: ViewModelBinding,
+        _ body: () throws -> R
+    ) rethrows -> R {
+        buildingStack.append(binding)
+        defer { buildingStack.removeLast() }
+        return try body()
+    }
 
     // MARK: - Identity and state
 
@@ -234,16 +254,23 @@ open class ViewModelBinding {
         return vm
     }
 
-    /// Creates a ViewModel using the supplied factory inside a `TaskLocal` binding
-    /// context so that `viewModelBinding` references inside the VM's init **and**
-    /// `onCreate` resolve to this binding.
+    /// Creates a ViewModel using the supplied factory.
     ///
-    /// The TaskLocal scope must wrap the whole `getInstance` call, not just
-    /// `factory.build()`: `InstanceHandle.init` invokes `onCreate` synchronously
-    /// after the builder returns, but `addRef(binding)` only happens once
-    /// `getInstance` returns. Without the outer wrap, `onCreate` would see an
-    /// empty `dependencyBindings` *and* a missing TaskLocal, causing
-    /// `viewModelBinding` access to trap.
+    /// Resolution of `viewModelBinding` from inside the VM's `init()` and
+    /// `onCreate(_:)` is wired through two layers, both established here:
+    ///
+    /// - During `factory.build()` (which runs the VM's `init()`), the builder
+    ///   closure pushes `self` onto `ViewModelBinding.buildingStack` so
+    ///   `ViewModelBindingHandler.binding` can read it as a fallback.
+    /// - Immediately after `factory.build()` returns and *before*
+    ///   `InstanceHandle.init` calls `onCreate(_:)`, the same closure calls
+    ///   `vm.refHandler.addRef(self)`. From this point on `viewModelBinding`
+    ///   reads from `dependencyBindings` and is no longer sensitive to
+    ///   execution context — `Task.detached`, old Combine sinks, UIKit
+    ///   target/action callbacks all see the binding.
+    ///
+    /// `recreate` reuses the same builder closure, so a rebuilt VM goes
+    /// through the same push/addRef sequence.
     private func createViewModel<VM: ViewModel>(
         factory: any ViewModelFactory<VM>,
         listen: Bool
@@ -254,20 +281,25 @@ open class ViewModelBinding {
         let aliveForever = factory.aliveForever()
 
         let instanceFactory = InstanceFactory<VM>(
-            builder: { factory.build() },
+            builder: { [weak self] in
+                guard let self else {
+                    preconditionFailure("ViewModelBinding deallocated mid-build")
+                }
+                return ViewModelBinding.withBuilding(self) {
+                    let vm = factory.build()
+                    vm.refHandler.addRef(self)
+                    return vm
+                }
+            },
             arg: InstanceArg(key: key, tag: tag, aliveForever: aliveForever)
         )
 
         let vm: VM
         do {
-            vm = try ViewModelBinding.$current.withValue(self) {
-                try instanceController.getInstance(VM.self, factory: instanceFactory)
-            }
+            vm = try instanceController.getInstance(VM.self, factory: instanceFactory)
         } catch {
             preconditionFailure("ViewModel create failed: \(error)")
         }
-        // SPI-only access; treat as internal plumbing for dependency resolution.
-        withInternal { vm.refHandler.addRef(self) }
 
         if listen {
             addListener(vm)
@@ -292,11 +324,6 @@ open class ViewModelBinding {
             self.onUpdate()
         })
         disposes.append(disposer)
-    }
-
-    /// Helper that runs a `@_spi(Internal)` block inline so callers can stay terse.
-    private func withInternal(_ body: () -> Void) {
-        body()
     }
 }
 

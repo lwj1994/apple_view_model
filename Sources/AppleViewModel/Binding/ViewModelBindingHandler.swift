@@ -6,12 +6,15 @@ import Foundation
 /// dependency resolution. `ViewModel.viewModelBinding` reads from this handler;
 /// lookup order is:
 ///
-/// 1. `dependencyBindings.first` — populated by `AutoDisposeInstanceController.getInstance`
-///    via `addRef(binding)` right after the VM is built, so VMs created by a binding
-///    can immediately see their parent.
-/// 2. `ViewModelBinding.current` (a `@TaskLocal`) — set by `ViewModelBinding._createViewModel`
-///    with `$current.withValue(self) { factory.build() }` so references made from
-///    inside a VM's initializer resolve to that builder's binding.
+/// 1. `dependencyBindings.first` — populated by `ViewModelBinding.createViewModel`
+///    inside the builder closure immediately after `factory.build()` returns, and
+///    also by `AutoDisposeInstanceController.getInstance` for cache hits. Once
+///    set, this is the only path consulted; it survives across `Task.detached`,
+///    old Combine sinks, UIKit target/action callbacks, etc.
+/// 2. `ViewModelBinding.currentBuilding` — top of a `@MainActor`-local stack
+///    pushed by `ViewModelBinding.withBuilding(_:_:)` for the duration of a
+///    `factory.build()` call. Used only as a fallback during the VM's `init()`
+///    body, before `addRef(...)` has been able to attach the binding.
 ///
 /// If neither is available the caller is using `viewModelBinding` outside any
 /// context, which is a programmer error.
@@ -43,7 +46,7 @@ public final class ViewModelBindingHandler {
         if let first = dependencyBindings.first {
             return first
         }
-        if let current = ViewModelBinding._currentTaskLocal {
+        if let current = ViewModelBinding.currentBuilding {
             return current
         }
         preconditionFailure(

@@ -1,15 +1,19 @@
 import XCTest
 @testable import AppleViewModel
 
-/// Regression coverage for the bug where `ViewModel.onCreate(_:)` ran *outside*
-/// the binding's TaskLocal scope and *before* `refHandler.addRef(binding)` was
-/// called, so any access to `viewModelBinding` from inside `onCreate` would
-/// trap with "No binding available".
+/// Regression coverage for the binding-resolution mechanism used during
+/// `ViewModel.init()` and `ViewModel.onCreate(_:)`.
 ///
-/// The fix wraps the entire `instanceController.getInstance(...)` call in
-/// `ViewModelBinding.$current.withValue(self)`, so the synchronous
-/// `InstanceHandle.init -> notifyCreate -> vm.onCreate(arg)` chain still sees
-/// the parent binding via the TaskLocal path.
+/// Mechanism (post-`@TaskLocal` removal):
+/// - `ViewModelBinding.createViewModel` wraps `factory.build()` in
+///   `ViewModelBinding.withBuilding(self) { … }`, pushing `self` onto a
+///   `@MainActor`-local stack so `viewModelBinding` reads during the VM's
+///   `init()` body resolve to the builder.
+/// - The same closure calls `vm.refHandler.addRef(self)` immediately after
+///   `factory.build()` returns and before `InstanceHandle.init` invokes
+///   `onCreate(_:)`. From that point on, `viewModelBinding` reads from
+///   `dependencyBindings.first` and is no longer sensitive to execution
+///   context — `Task.detached`, Combine sinks, UIKit callbacks all see it.
 @MainActor
 final class OnCreateBindingResolutionTests: XCTestCase {
     override func setUp() {
@@ -75,17 +79,16 @@ final class OnCreateBindingResolutionTests: XCTestCase {
         XCTAssertEqual(b.updates, updatesAfterCreate + 1)
     }
 
-    /// White-box check confirming the *mechanism* of the fix: while `onCreate`
-    /// runs, `dependencyBindings` is still empty (addRef hasn't fired yet) but
-    /// `ViewModelBinding.current` (the TaskLocal) IS the parent binding.
-    func test_taskLocal_is_active_during_onCreate_addRef_is_not_yet() {
+    /// Inside `onCreate`, `viewModelBinding` must resolve to the parent binding.
+    /// With the post-TaskLocal mechanism, this works because
+    /// `refHandler.addRef(binding)` fires inside the builder closure
+    /// *before* `InstanceHandle.init` invokes `onCreate(_:)`.
+    func test_onCreate_resolves_binding_inside_callback() {
         final class HostVM: ViewModel {
-            var taskLocalDuringOnCreate: ViewModelBinding?
             var resolvedBinding: ViewModelBinding?
 
             override func onCreate(_ arg: InstanceArg) {
                 super.onCreate(arg)
-                taskLocalDuringOnCreate = ViewModelBinding.current
                 resolvedBinding = viewModelBinding
             }
         }
@@ -94,10 +97,45 @@ final class OnCreateBindingResolutionTests: XCTestCase {
         let b = ViewModelBinding()
         let host = b.watch(spec)
 
-        XCTAssertTrue(host.taskLocalDuringOnCreate === b,
-                      "TaskLocal must surface the parent binding inside onCreate")
         XCTAssertTrue(host.resolvedBinding === b,
                       "viewModelBinding must resolve to the parent binding inside onCreate")
+    }
+
+    /// Headline win of replacing `@TaskLocal` with addRef-first + MainActor
+    /// stack: a `Task.detached` started during `onCreate` (and therefore
+    /// running on a *different* Task with no TaskLocal inheritance) still
+    /// resolves `viewModelBinding` correctly via `dependencyBindings`.
+    func test_task_detached_inside_onCreate_can_resolve_binding() {
+        final class HostVM: ViewModel {
+            static var pendingExpectation: XCTestExpectation?
+            static var resolvedFromDetached: ViewModelBinding?
+
+            override func onCreate(_ arg: InstanceArg) {
+                super.onCreate(arg)
+                let expectation = Self.pendingExpectation
+                Task.detached { @MainActor [weak self] in
+                    guard let self else { return }
+                    Self.resolvedFromDetached = self.viewModelBinding
+                    expectation?.fulfill()
+                }
+            }
+        }
+
+        let expectation = expectation(description: "detached resolves binding")
+        HostVM.pendingExpectation = expectation
+        HostVM.resolvedFromDetached = nil
+
+        let spec = ViewModelSpec<HostVM> { HostVM() }
+        let b = ViewModelBinding()
+        _ = b.watch(spec)
+
+        wait(for: [expectation], timeout: 1.0)
+        XCTAssertTrue(HostVM.resolvedFromDetached === b,
+                      "Task.detached spawned in onCreate must still see the parent binding "
+                      + "through refHandler.dependencyBindings — the buildingStack is empty by then")
+
+        HostVM.pendingExpectation = nil
+        HostVM.resolvedFromDetached = nil
     }
 
     /// `init()` and `onCreate(_:)` should both resolve to the same parent
@@ -206,8 +244,8 @@ final class OnCreateBindingResolutionTests: XCTestCase {
 
     /// `onCreate` only fires the first time a key is built. A second binding
     /// that watches the cached instance must not re-trigger `onCreate`, and
-    /// must not trap when the cached VM was originally created in another
-    /// binding's TaskLocal scope.
+    /// must not trap when the cached VM was originally created by another
+    /// binding.
     func test_onCreate_fires_once_for_shared_cached_instance() {
         final class DepVM: ViewModel {}
         let depSpec = ViewModelSpec<DepVM>(key: "shared-dep") { DepVM() }
