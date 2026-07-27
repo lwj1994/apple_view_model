@@ -16,6 +16,7 @@ import Foundation
 ///
 /// `setProxy(_:)` replaces the live builder / key / tag / aliveForever values
 /// for testing. Call `clearProxy()` to revert.
+/// Every `aliveForever` spec must also configure an explicit non-nil key.
 ///
 /// Mirrors the Dart `ViewModelSpec<T>`.
 @MainActor

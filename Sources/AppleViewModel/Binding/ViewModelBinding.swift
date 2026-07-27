@@ -98,6 +98,16 @@ open class ViewModelBinding {
 
     public init() {}
 
+    static func aliveForeverKeyValidationError(
+        configuredKey: AnyHashable?,
+        aliveForever: Bool
+    ) -> String? {
+        guard aliveForever, configuredKey == nil else { return nil }
+        return "An aliveForever ViewModel must use an explicit key. "
+            + "aliveForever retains the instance after ownership reaches zero, so "
+            + "an unkeyed binding-private identity would not be globally reachable."
+    }
+
     private func handleInstanceChange() {
         if markViewModelBindingUpdated(self) { onUpdate() }
     }
@@ -337,12 +347,11 @@ open class ViewModelBinding {
         let configuredKey = factory.key()
         let tag = factory.tag()
         let aliveForever = factory.aliveForever()
-        if isDependencyBinding, configuredKey == nil, aliveForever {
-            preconditionFailure(
-                "An aliveForever ViewModel resolved from another ViewModel must use "
-                    + "an explicit key. A parent-private default key becomes unreachable "
-                    + "after that parent generation is disposed."
-            )
+        if let validationError = Self.aliveForeverKeyValidationError(
+            configuredKey: configuredKey,
+            aliveForever: aliveForever
+        ) {
+            preconditionFailure(validationError)
         }
         let key = configuredKey ?? defaultViewModelKey
 

@@ -65,4 +65,54 @@ final class SpecSharingTests: XCTestCase {
         let found: CounterViewModel? = ViewModel.maybeReadCached(key: "not-there")
         XCTAssertNil(found)
     }
+
+    func test_aliveForeverKeyValidation_appliesToEveryBinding() {
+        let expected = "An aliveForever ViewModel must use an explicit key. "
+            + "aliveForever retains the instance after ownership reaches zero, so "
+            + "an unkeyed binding-private identity would not be globally reachable."
+
+        XCTAssertEqual(
+            ViewModelBinding.aliveForeverKeyValidationError(
+                configuredKey: nil,
+                aliveForever: true
+            ),
+            expected
+        )
+        XCTAssertNil(
+            ViewModelBinding.aliveForeverKeyValidationError(
+                configuredKey: "global",
+                aliveForever: true
+            )
+        )
+        XCTAssertNil(
+            ViewModelBinding.aliveForeverKeyValidationError(
+                configuredKey: nil,
+                aliveForever: false
+            )
+        )
+    }
+
+    func test_storeBoundaryRejectsAliveForeverWithoutExplicitKey() {
+        final class StoreValue {}
+        var buildCount = 0
+
+        XCTAssertThrowsError(
+            try InstanceManager.shared.get(
+                StoreValue.self,
+                factory: InstanceFactory(
+                    builder: {
+                        buildCount += 1
+                        return StoreValue()
+                    },
+                    arg: InstanceArg(aliveForever: true)
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                (error as? ViewModelError)?.message,
+                "An aliveForever instance must use an explicit key."
+            )
+        }
+        XCTAssertEqual(buildCount, 0)
+    }
 }

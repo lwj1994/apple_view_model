@@ -69,8 +69,10 @@ Use this skill when:
 - A key does not retain an instance.
 - `aliveForever` only skips automatic disposal when ownership reaches zero.
   Explicit `recycle` and `InstanceManager.shared.debugReset()` still dispose it.
-- A nested `aliveForever` dependency requires an explicit key because a
-  parent-private key becomes unreachable after that parent generation dies.
+- Every `aliveForever` spec requires an explicit key, whether it is resolved by
+  a root binding or another ViewModel. Swift fails fast before calling the
+  builder when the key is missing or computes to `nil`; the Store enforces the
+  same invariant for internal factories.
 
 ```swift
 // Managed by one resolving binding by default.
@@ -214,7 +216,7 @@ owned resources with `addDispose` and let the framework invoke cleanup.
 4. Using cached lookup as a replacement for a stable spec.
 5. Calling `vm.dispose()` instead of relying on binding disposal or explicit
    global `recycle`.
-6. Resolving a nested unkeyed `aliveForever` ViewModel.
+6. Resolving any unkeyed `aliveForever` ViewModel, at root or nested scope.
 7. Registering `listen` inside a computed property.
 8. Pairing selector observation with a broad `watch` subscription.
 9. Calling public APIs away from `@MainActor`.
@@ -269,5 +271,5 @@ Platforms: iOS 16+, macOS 13+, tvOS 16+, watchOS 9+, visionOS 1+;
 Swift 6.0+.
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.4.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.4.1")
 ```

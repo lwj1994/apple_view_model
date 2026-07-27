@@ -5,7 +5,8 @@ import Foundation
 ///
 /// Implementations must provide `build()`. `key()`, `tag()`, and `aliveForever()`
 /// default to `nil` / `false`; two factories that return the same non-nil `key`
-/// resolve to the same instance in the registry.
+/// resolve to the same instance in the registry. Returning `true` from
+/// `aliveForever()` requires `key()` to return a non-nil explicit key.
 ///
 /// The protocol is `@MainActor` because the canonical conformer (`ViewModelSpec`)
 /// holds mutable state (the test-time `proxy` slot) alongside a `@MainActor`

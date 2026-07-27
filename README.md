@@ -35,7 +35,7 @@ Deployment target: **iOS 16+**. Swift 6 language mode with strict concurrency (`
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.4.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.4.1")
 ```
 
 Add `"AppleViewModel"` to your target dependencies.
@@ -180,7 +180,7 @@ Modules A, B, C develop independently, each exporting their own specs. Getter de
 
 A keyed parent can be shared by several roots. When roots join or leave, its already-resolved children keep the same identity and receive source-aware owner updates. A root may own the same keyed child both directly and through one or more parents; releasing one path cannot remove the others. Synchronous notification propagation is transaction-based, so a diamond graph refreshes each binding at most once.
 
-Unkeyed identity is the resolved ViewModel type plus the current binding's private default key: repeated resolution of the same type reuses one instance within that binding, while different bindings remain isolated. Add an explicit key for cross-binding sharing or multiple instances of the same type in one binding. A nested `aliveForever` dependency must have an explicit key so it remains reachable after its parent generation is disposed.
+Unkeyed identity is the resolved ViewModel type plus the current binding's private default key: repeated resolution of the same type reuses one instance within that binding, while different bindings remain isolated. Add an explicit key for cross-binding sharing or multiple instances of the same type in one binding. Every `aliveForever` spec must have an explicit key, whether resolved by a root binding or another ViewModel; a missing or computed-nil key fails fast before the builder runs, and the Store enforces the same invariant for internal factories.
 
 ## Binding access APIs
 
@@ -203,10 +203,10 @@ Normal application code should use `watch(spec)` or `read(spec)`. Cached APIs qu
 
 - `recycle(vm)` is a destructive global escape hatch: it removes every direct and parent owner path and disposes the shared object, including an `aliveForever` object. The next resolver-property access creates a fresh instance.
 - `recreate(vm)` replaces the object while preserving active owner paths and moving binding-owned watch/listen subscriptions to the replacement.
-- `aliveForever` skips automatic disposal when ownership reaches zero; it does not prevent explicit `recycle` or `InstanceManager.shared.debugReset()`.
+- `aliveForever` requires an explicit key at every resolution site and skips automatic disposal when ownership reaches zero; it does not prevent explicit `recycle` or `InstanceManager.shared.debugReset()`.
 - Direct and parent-propagated paths are source-aware. `onBind` runs for the first source of a visible binding id, and `onUnbind` for the last source.
 
-Construction and dependency graphs are checked. Recursive construction, runtime ownership cycles, and nested unkeyed `aliveForever` dependencies fail fast on the main actor. Failed or reset-invalidated recreation never installs a detached replacement into a dead handle.
+Construction and dependency graphs are checked. Recursive construction, runtime ownership cycles, and every unkeyed `aliveForever` spec fail fast on the main actor. Failed or reset-invalidated recreation never installs a detached replacement into a dead handle.
 
 ## Fine-grained observation
 

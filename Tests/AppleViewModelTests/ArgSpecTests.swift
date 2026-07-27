@@ -74,4 +74,20 @@ final class ArgSpecTests: XCTestCase {
         b1.dispose()
         XCTAssertFalse(vm.isDisposed)
     }
+
+    func test_arg_aliveForever_rejectsComputedNilKey() {
+        let spec = ViewModelSpecWithArg<CounterViewModel, String>(
+            builder: { _ in CounterViewModel() },
+            key: { _ in nil },
+            aliveForever: { _ in true }
+        )
+        let resolved = spec("missing-key")
+
+        XCTAssertNotNil(
+            ViewModelBinding.aliveForeverKeyValidationError(
+                configuredKey: resolved.key(),
+                aliveForever: resolved.aliveForever()
+            )
+        )
+    }
 }

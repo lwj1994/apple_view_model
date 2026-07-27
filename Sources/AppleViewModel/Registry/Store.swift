@@ -57,6 +57,11 @@ final class Store<Value: AnyObject> {
         guard !disposed else {
             throw ViewModelError("Store<\(Value.self)> has been disposed.")
         }
+        if factory.arg.aliveForever, factory.arg.key == nil {
+            throw ViewModelError(
+                "An aliveForever instance must use an explicit key."
+            )
+        }
         let realKey: AnyHashable = factory.arg.key ?? AnyHashable(ViewModelPrivateKey())
         let bindingId = factory.arg.bindingId
         let arg = factory.arg.copy(key: .some(realKey))

@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-27
+
+### Fixed
+
+- Require an explicit key for every `aliveForever` spec, including root
+  bindings as well as ViewModel-to-ViewModel dependencies. Invalid
+  configurations now fail fast before the builder runs, while the Store
+  enforces the same rule for internal factories.
+
+### Tests
+
+- Add root, computed-key, and Store-boundary validation coverage while
+  retaining serial execution with `swift test --no-parallel`.
+
 ## [0.4.0] - 2026-07-27
 
 Aligns AppleViewModel's module-composition, dependency ownership, and instance

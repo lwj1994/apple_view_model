@@ -5,12 +5,13 @@ import Foundation
 /// Corresponds to the Dart `InstanceArg` struct.
 ///
 /// - `key`: Cache key. Instances with the same `key` are the same object in the registry.
+///   A retained instance requires a non-nil explicit key.
 /// - `tag`: Logical grouping label. Multiple instances may share a tag; used by
 ///   `readCachesByTag` / `watchCachesByTag`.
 /// - `bindingId`: The id of the `ViewModelBinding` that owns the reference being added.
 ///   Drives the reference-counted lifetime model.
 /// - `aliveForever`: When true, the instance is not disposed even when `bindingIds`
-///   drops to zero.
+///   drops to zero. Requires `key` to be non-nil.
 public struct InstanceArg: Hashable {
     public let key: AnyHashable?
     public let tag: AnyHashable?
