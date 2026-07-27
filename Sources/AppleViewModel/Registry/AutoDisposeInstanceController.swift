@@ -1,35 +1,38 @@
 import Foundation
 
-/// Tracks every handle that a `ViewModelBinding` has touched and handles the
-/// reference-count bookkeeping on its behalf.
-///
-/// Equivalent to the Dart `AutoDisposeInstanceController`. Responsibilities:
-/// - tag each handle with the owning binding's id,
-/// - observe `.recreate` actions so the binding can re-attach its dependency
-///   reference and then call `onUpdate` to refresh the host,
-/// - on binding dispose, fan out `unbind` to every tracked handle so their
-///   reference counts drop (and dispose if it was the last owner).
+/// Tracks every registry handle touched by one binding and mirrors handle
+/// replacement/disposal back into the binding's source-aware hooks.
 @MainActor
 final class AutoDisposeInstanceController {
     private unowned let binding: ViewModelBinding
     private let onRecreate: () -> Void
+    private let onInstanceAttached: ((any _AnyHandle, ViewModel) -> Void)?
+    private let onInstanceDetached: ((any _AnyHandle, ViewModel) -> Void)?
+    private let onInstanceRecreated: ((any _AnyHandle, ViewModel, ViewModel) -> Void)?
 
-    /// Every handle currently observed. Keyed by `ObjectIdentifier` so a mix of
-    /// generic instantiations can coexist in a single dictionary.
-    private var trackedHandles: [ObjectIdentifier: AnyObject] = [:]
-
-    /// Per-handle teardown closure for the `.recreate` listener.
+    private var trackedHandles: [ObjectIdentifier: any _AnyHandle] = [:]
     private var listenerDisposers: [ObjectIdentifier: () -> Void] = [:]
+    private var trackedViewModels: [ObjectIdentifier: ViewModel] = [:]
     private var disposed = false
 
-    init(binding: ViewModelBinding, onRecreate: @escaping () -> Void) {
+    init(
+        binding: ViewModelBinding,
+        onRecreate: @escaping () -> Void,
+        onInstanceAttached: ((any _AnyHandle, ViewModel) -> Void)? = nil,
+        onInstanceDetached: ((any _AnyHandle, ViewModel) -> Void)? = nil,
+        onInstanceRecreated: ((any _AnyHandle, ViewModel, ViewModel) -> Void)? = nil
+    ) {
         self.binding = binding
         self.onRecreate = onRecreate
+        self.onInstanceAttached = onInstanceAttached
+        self.onInstanceDetached = onInstanceDetached
+        self.onInstanceRecreated = onInstanceRecreated
     }
 
-    /// Resolve or create the handle, stamp the binding's id onto it, and begin
-    /// tracking recreate actions. Returns the contained instance.
-    func getInstance<Value: AnyObject>(_ type: Value.Type, factory: InstanceFactory<Value>) throws -> Value {
+    func getInstance<Value: AnyObject>(
+        _ type: Value.Type,
+        factory: InstanceFactory<Value>
+    ) throws -> Value {
         guard !disposed else {
             throw ViewModelError("AutoDisposeInstanceController.getInstance() called after dispose.")
         }
@@ -38,14 +41,12 @@ final class AutoDisposeInstanceController {
         )
         let handle = try InstanceManager.shared.getHandle(type, factory: factoryWithBinding)
         if let vm = handle.value as? ViewModel {
-            withInternal { vm.refHandler.addRef(binding) }
+            vm.refHandler.addRef(binding)
         }
         attachRecreateListener(handle)
         return try handle.requireInstance()
     }
 
-    /// Batch lookup by tag. Each matched handle is bound and tracked; when
-    /// `observeRecreate` is true we also install a recreate observer.
     func getInstancesByTag<Value: AnyObject>(
         _ type: Value.Type,
         tag: AnyHashable,
@@ -56,116 +57,111 @@ final class AutoDisposeInstanceController {
         for handle in handles {
             handle.bind(binding.id)
             if let vm = handle.value as? ViewModel {
-                withInternal { vm.refHandler.addRef(binding) }
+                vm.refHandler.addRef(binding)
             }
             if observeRecreate {
                 attachRecreateListener(handle)
             } else {
-                // Even without a recreate listener we keep the handle referenced
-                // so `dispose()` walks it and emits `unbind`.
-                let key = ObjectIdentifier(handle)
-                if trackedHandles[key] == nil {
-                    trackedHandles[key] = handle
-                }
+                trackedHandles[ObjectIdentifier(handle)] = handle
             }
-            if let v = handle.value {
-                result.append(v)
-            }
+            if let value = handle.value { result.append(value) }
         }
         return result
     }
 
-    /// Invoke `action` for each tracked `ViewModel`, skipping those already disposed.
     func performForAllInstances(_ action: (ViewModel) -> Void) {
-        for anyHandle in trackedHandles.values {
-            guard
-                let handle = anyHandle as? _AnyHandle,
-                !handle.isDisposedAny,
-                let vm = handle.anyValue as? ViewModel
-            else { continue }
+        for handle in trackedHandles.values {
+            guard !handle.isDisposedAny, let vm = handle.anyValue as? ViewModel else { continue }
             action(vm)
         }
     }
 
-    /// Remove the specified instance from tracking and force-dispose its handle.
-    /// Used by `ViewModelBinding.recycle(_:)`.
-    func recycle<Value: AnyObject>(_ value: Value) {
-        for (key, anyHandle) in trackedHandles {
-            guard let handle = anyHandle as? InstanceHandle<Value>, handle.value === value else { continue }
-            if let disposer = listenerDisposers.removeValue(forKey: key) {
-                disposer()
-            }
-            handle.unbindAll(force: true)
-            trackedHandles.removeValue(forKey: key)
+    func unbind<Value: AnyObject>(_ value: Value) {
+        guard let (key, handle) = trackedHandles.first(where: { $0.value.anyValue === value }) else {
             return
         }
-    }
-
-    /// Drop only this binding's reference to `value`. Triggers dispose if that
-    /// was the last reference and the instance is not `aliveForever`.
-    func unbind<Value: AnyObject>(_ value: Value) {
-        for anyHandle in trackedHandles.values {
-            guard let handle = anyHandle as? InstanceHandle<Value>, handle.value === value else { continue }
-            handle.unbind(binding.id)
-            break
-        }
+        detachViewModelRef(key: key, handle: handle)
+        listenerDisposers.removeValue(forKey: key)?()
+        trackedHandles.removeValue(forKey: key)
+        trackedViewModels.removeValue(forKey: key)
+        handle.unbindAny(bindingId: binding.id)
     }
 
     func dispose() {
         guard !disposed else { return }
         disposed = true
-        for disposer in listenerDisposers.values { disposer() }
-        listenerDisposers.removeAll()
-
-        for anyHandle in trackedHandles.values {
-            guard let handle = anyHandle as? _AnyHandle else { continue }
-            if handle.isDisposedAny { continue }
-            if let vm = handle.anyValue as? ViewModel {
-                withInternal { vm.refHandler.removeRef(binding) }
+        for (key, handle) in Array(trackedHandles) {
+            detachViewModelRef(key: key, handle: handle)
+            listenerDisposers.removeValue(forKey: key)?()
+            if !handle.isDisposedAny {
+                handle.unbindAny(bindingId: binding.id)
             }
-            handle.unbindAny(bindingId: binding.id)
         }
         trackedHandles.removeAll()
+        listenerDisposers.removeAll()
+        trackedViewModels.removeAll()
     }
 
-    // MARK: - Internals
-
     private func attachRecreateListener<Value: AnyObject>(_ handle: InstanceHandle<Value>) {
+        guard !disposed else { return }
         let key = ObjectIdentifier(handle)
-        trackedHandles[key] = handle
-        if listenerDisposers[key] != nil { return }
+        guard listenerDisposers[key] == nil else { return }
 
-        let disposer = handle.addListener { [weak self, weak handle] current in
+        if let vm = handle.value as? ViewModel {
+            onInstanceAttached?(handle, vm)
+            trackedViewModels[key] = vm
+        }
+        trackedHandles[key] = handle
+        listenerDisposers[key] = handle.addListener { [weak self, weak handle] current in
             guard let self, let handle else { return }
             switch current.currentAction {
+            case .dispose:
+                self.detachViewModelRef(key: key, handle: handle)
+                self.listenerDisposers.removeValue(forKey: key)?()
+                self.trackedHandles.removeValue(forKey: key)
+                self.trackedViewModels.removeValue(forKey: key)
+                if !InstanceManager.shared.isResetting { self.onRecreate() }
             case .recreate:
-                if !handle.isDisposed, let vm = handle.value as? ViewModel {
-                    self.withInternal { vm.refHandler.addRef(self.binding) }
+                let previous = self.trackedViewModels[key]
+                if let replacement = handle.value as? ViewModel {
+                    replacement.refHandler.addRef(self.binding)
+                    self.trackedViewModels[key] = replacement
+                    if let previous, previous !== replacement {
+                        self.onInstanceRecreated?(handle, previous, replacement)
+                    }
                 }
-                self.onRecreate()
-            case .dispose, .none:
+                if !InstanceManager.shared.isResetting { self.onRecreate() }
+            case .none:
                 break
             }
         }
-        listenerDisposers[key] = disposer
     }
 
-    private func withInternal(_ body: () -> Void) {
-        body()
+    private func detachViewModelRef(key: ObjectIdentifier, handle: any _AnyHandle) {
+        guard let vm = trackedViewModels[key] ?? handle.anyValue as? ViewModel else { return }
+        if !vm.isDisposed { vm.refHandler.removeRef(binding) }
+        onInstanceDetached?(handle, vm)
     }
 }
 
-/// Type-erased handle interface so `trackedHandles` can mix different `Value`
-/// instantiations.
+/// Type-erased registry handle used by one binding across multiple VM types.
 @MainActor
 protocol _AnyHandle: AnyObject {
     var anyValue: AnyObject? { get }
     var isDisposedAny: Bool { get }
+    func bindAnyFrom(bindingId: String, source: AnyObject)
     func unbindAny(bindingId: String)
+    func unbindAnyFrom(bindingId: String, source: AnyObject)
 }
 
 extension InstanceHandle: _AnyHandle {
     var anyValue: AnyObject? { value }
     var isDisposedAny: Bool { isDisposed }
+    func bindAnyFrom(bindingId: String, source: AnyObject) {
+        bindFrom(bindingId, source: source)
+    }
     func unbindAny(bindingId: String) { unbind(bindingId) }
+    func unbindAnyFrom(bindingId: String, source: AnyObject) {
+        unbindFrom(bindingId, source: source)
+    }
 }

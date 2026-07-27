@@ -57,14 +57,14 @@ final class Store<Value: AnyObject> {
         guard !disposed else {
             throw ViewModelError("Store<\(Value.self)> has been disposed.")
         }
-        let realKey: AnyHashable = factory.arg.key ?? AnyHashable(UUID())
+        let realKey: AnyHashable = factory.arg.key ?? AnyHashable(ViewModelPrivateKey())
         let bindingId = factory.arg.bindingId
         let arg = factory.arg.copy(key: .some(realKey))
 
         if let cached = handles[realKey] {
-            if let bindingId, !cached.contains(bindingId: bindingId) {
-                cached.bind(bindingId)
-            }
+            // A visible owner id can reach this handle directly and through a
+            // parent. bind() records the direct source independently.
+            cached.bind(bindingId)
             return cached
         }
 
@@ -72,14 +72,35 @@ final class Store<Value: AnyObject> {
             throw ViewModelError("\(Value.self) factory is nil and cache miss.")
         }
 
-        let instance = builder()
-        let created = InstanceHandle<Value>(
-            value: instance,
-            arg: arg,
-            index: nextIndex,
-            factory: builder
-        )
-        nextIndex += 1
+        let created = try runInViewModelConstruction(
+            Value.self,
+            key: realKey,
+            isImplicit: realKey.base is ViewModelPrivateKey
+        ) {
+            let instance = builder()
+            if disposed {
+                disposeUntrackedInstance(instance, arg: arg)
+                throw ViewModelError(
+                    "Cannot create \(Value.self) because its Store was disposed while "
+                        + "the factory builder was running. The new instance was disposed "
+                        + "and was not cached."
+                )
+            }
+            defer { nextIndex += 1 }
+            return InstanceHandle<Value>(
+                value: instance,
+                arg: arg,
+                index: nextIndex,
+                factory: builder
+            )
+        }
+        if disposed {
+            created.unbindAll(force: true)
+            throw ViewModelError(
+                "Cannot create \(Value.self) because its Store was disposed during "
+                    + "instance creation. The new instance was disposed and was not cached."
+            )
+        }
         handles[realKey] = created
 
         // Watch for dispose so we can evict the handle from the cache.
@@ -108,6 +129,15 @@ final class Store<Value: AnyObject> {
         return try handle.recreate(builder: builder)
     }
 
+    func tryRecycle(_ target: AnyObject) -> Bool {
+        guard !disposed else { return false }
+        guard let handle = handles.values.first(where: { $0.value === target }) else {
+            return false
+        }
+        handle.unbindAll(force: true)
+        return true
+    }
+
     /// Store-wide teardown. Forces every remaining handle to dispose so no leak survives.
     func dispose() {
         guard !disposed else { return }
@@ -117,5 +147,10 @@ final class Store<Value: AnyObject> {
             handle.unbindAll(force: true)
         }
         handles.removeAll()
+    }
+
+    private func disposeUntrackedInstance(_ target: Value, arg: InstanceArg) {
+        guard let lifecycle = target as? InstanceLifeCycle else { return }
+        lifecycle.onDispose(arg)
     }
 }

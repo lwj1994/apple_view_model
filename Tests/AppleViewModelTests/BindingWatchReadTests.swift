@@ -24,6 +24,18 @@ final class BindingWatchReadTests: XCTestCase {
         b2.dispose()
     }
 
+    func test_unkeyed_spec_reuses_one_instance_within_the_same_binding() {
+        let spec = ViewModelSpec<CounterViewModel> { CounterViewModel() }
+        let binding = ViewModelBinding()
+
+        let first = binding.read(spec)
+        let second = binding.read(spec)
+
+        XCTAssertTrue(first === second)
+        binding.dispose()
+        XCTAssertTrue(first.isDisposed)
+    }
+
     // MARK: - key-based sharing
 
     func test_watch_with_shared_key_yields_same_instance() {

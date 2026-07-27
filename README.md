@@ -6,11 +6,11 @@
 
 > 📖 Changelog: [CHANGELOG](./CHANGELOG.md) · Releases: [GitHub Releases](https://github.com/lwj1994/apple_view_model/releases)
 
-**AppleViewModel is a service-registry DI framework** for Apple platforms, with first-class SwiftUI and UIKit integration.
+**AppleViewModel is a state-management, functional-module composition, DI, and automatic-lifecycle framework** for Apple platforms, with first-class SwiftUI and UIKit integration.
 
 Core idea: **anything can be a ViewModel** — business state, repositories, network services, utility stores, page controllers. Subclass `ViewModel`, declare a `ViewModelSpec`, and you get shared instances with automatic lifecycle management. VMs can depend on other VMs, giving you full DI across modules.
 
-- **Service-style DI**: `ViewModelSpec` declares how to build, whether to share (by key), and whether to keep alive. Retrieve instances with `binding.watch(spec)` / `binding.read(spec)`. Inside a VM, use `viewModelBinding.watch(otherSpec)` for VM-to-VM dependencies.
+- **Managed module composition**: `ViewModelSpec` declares how to build and identify a module. Retrieve instances with `binding.watch(spec)` / `binding.read(spec)`. Inside a VM, expose dependencies through computed properties that resolve from `viewModelBinding`.
 - **Automatic lifecycle**: Every host holds a `ViewModelBinding`. Reference counting drives disposal — when the last host releases its reference, the VM's `onDispose` fires. No manual cleanup.
 - **Default UI integration**:
   - SwiftUI: `@WatchViewModel` / `@ReadViewModel` / `ViewModelBuilder` / `ObserverBuilder` / `StateViewModelValueWatcher`. `ViewModel` is itself an `ObservableObject`.
@@ -22,12 +22,20 @@ Core idea: **anything can be a ViewModel** — business state, repositories, net
 
 Deployment target: **iOS 16+**. Swift 6 language mode with strict concurrency (`@MainActor`, `Sendable`).
 
+## Core resolution rules
+
+- Use a stable, module-level `ViewModelSpec`, then resolve it with `watch(spec)` or `read(spec)`. These are the primary APIs for UI hosts, plain bindings, tests, and ViewModel-to-ViewModel dependencies.
+- `watch` and `read` both create or reuse an instance, establish ownership, and observe handle recreation/disposal. `watch` additionally listens to the ViewModel's own `notifyListeners()`.
+- Prefer managed instances over global singletons. A feature, service, repository, coordinator, or domain capability should normally use an unkeyed spec with `aliveForever: false`; the binding graph then owns creation and disposal.
+- Cached APIs are advanced, lookup-only escape hatches. They cannot create a missing instance and should not replace spec-based dependency resolution.
+- Resolve ViewModels through computed properties rather than `lazy var` or stored references. This lets the next access observe an explicit recycle/recreate or an asynchronous lifecycle change.
+
 ## Installation
 
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.3.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.4.0")
 ```
 
 Add `"AppleViewModel"` to your target dependencies.
@@ -80,10 +88,11 @@ Any shared dependency — AuthService, ThemeStore, Logger — works the same way
 Declare how the VM is built and whether instances are shared. Specs are typically module-level constants:
 
 ```swift
-// Plain spec: one instance per binding (private to each host)
+// Plain spec: one instance of this VM type per binding (private to each host)
 let counterSpec = ViewModelSpec<CounterViewModel> { CounterViewModel() }
 
-// Shared service: same key → same instance across all bindings. aliveForever keeps it alive permanently.
+// Intentional app-wide service: same key → same instance across all bindings.
+// aliveForever skips automatic disposal at zero owners, but recycle/debugReset still dispose it.
 let authSpec = ViewModelSpec<AuthViewModel>(key: "auth", aliveForever: true) { AuthViewModel() }
 
 // Parameterized spec: different key per argument, same-argument instances shared
@@ -95,6 +104,8 @@ let userSpec = ViewModelSpecWithArg<UserViewModel, String>(
 ```
 
 Specs support `setProxy` / `clearProxy` for swapping implementations in tests.
+
+Identity is the resolved ViewModel type plus its effective key. An unkeyed spec receives a private key from the resolving binding, so the same type is reused within that binding and isolated from other bindings. Use an explicit `key` only for intentional cross-binding sharing or multiple instances of the same type in one binding. `tag` is a grouping/lookup label and does not participate in identity. A key does not retain an instance; `aliveForever` only skips automatic disposal when its owner set becomes empty.
 
 ### 3. ViewModelBinding — the container
 
@@ -117,7 +128,7 @@ struct CounterView: View {
 
 ```swift
 final class MyViewController: UIViewController, ViewModelBindingRefreshable {
-    private lazy var vm = viewModelBinding.watch(counterSpec)
+    private var vm: CounterViewModel { viewModelBinding.watch(counterSpec) }
 
     func viewModelBindingDidUpdate() {
         label.text = "\(vm.state.count)"
@@ -129,7 +140,7 @@ final class MyViewController: UIViewController, ViewModelBindingRefreshable {
 
 ```swift
 final class CounterView: UIView, ViewModelBindingRefreshable {
-    private lazy var vm = viewModelBinding.watch(counterSpec)
+    private var vm: CounterViewModel { viewModelBinding.watch(counterSpec) }
 
     func viewModelBindingDidUpdate() {
         setNeedsLayout()
@@ -148,32 +159,54 @@ binding.dispose()  // reference count drops → VM auto-disposed
 
 ## VM-to-VM DI
 
-The core value of a DI framework: one ViewModel injecting another. Inherit `ViewModel` and you get `viewModelBinding`, which resolves to the binding that created this VM. The binding is stored on the VM by its parent binding right after construction, so `viewModelBinding` is safe to use from anywhere on `@MainActor` — including `onCreate`, regular methods, `Task.detached`, Combine sinks, and UIKit target/action callbacks. The only fallback path (a per-thread construction stack) is used solely during the VM's own `init()` body.
+The core value of a DI framework is one ViewModel injecting another. Every managed parent object generation lazily owns a stable dependency binding. It gives unkeyed children a parent-private identity, keeps resolved children alive for at least the parent's lifetime, and mirrors the parent's current root owners to those children in real time.
+
+Expose dependencies through computed properties. Do not retain a nested ViewModel in `lazy var`, a stored property, or an ad-hoc cache: after explicit `recycle`, parent recreation, or an asynchronous lifecycle race, the next property access must be able to resolve the replacement object.
 
 ```swift
-// Module A: register a service
-let authSpec = ViewModelSpec<AuthViewModel>(key: "auth", aliveForever: true) { AuthViewModel() }
+// Module A: export a managed capability. It is not global by default.
+let sessionSpec = ViewModelSpec<SessionViewModel> { SessionViewModel() }
+let cartSpec = ViewModelSpec<CartViewModel> { CartViewModel() }
 
 // Module B: inject it
 @MainActor
 final class OrderViewModel: ViewModel {
-    lazy var auth: AuthViewModel = viewModelBinding.read(authSpec)   // read: use but don't subscribe
-    lazy var cart: CartViewModel = viewModelBinding.watch(cartSpec)  // watch: subscribe to changes
+    var session: SessionViewModel { viewModelBinding.read(sessionSpec) } // call without bubbling
+    var cart: CartViewModel { viewModelBinding.watch(cartSpec) }  // watch: child updates notify this parent
 }
 ```
 
-Modules A, B, C develop independently, each exporting their own specs. The top-level binding wires them together. Reference counting handles disposal: when the parent binding disposes, VMs created through it drop their refs.
+Modules A, B, C develop independently, each exporting their own specs. Getter declarations create nothing until accessed. Reference counting handles disposal: a child cannot die before a parent generation that owns it, but it can outlive that parent when another direct or parent path still owns it.
 
-## watch vs read
+A keyed parent can be shared by several roots. When roots join or leave, its already-resolved children keep the same identity and receive source-aware owner updates. A root may own the same keyed child both directly and through one or more parents; releasing one path cannot remove the others. Synchronous notification propagation is transaction-based, so a diamond graph refreshes each binding at most once.
 
-| | Create (if missing) | Bind (ref +1) | Listen (triggers refresh) |
-|---|---|---|---|
-| `watch(spec)` | ✓ | ✓ | ✓ |
-| `read(spec)` | ✓ | ✓ | ✗ |
-| `watchCached(key:)` | ✗ | ✓ | ✓ |
-| `readCached(key:)` | ✗ | ✓ | ✗ |
+Unkeyed identity is the resolved ViewModel type plus the current binding's private default key: repeated resolution of the same type reuses one instance within that binding, while different bindings remain isolated. Add an explicit key for cross-binding sharing or multiple instances of the same type in one binding. A nested `aliveForever` dependency must have an explicit key so it remains reachable after its parent generation is disposed.
 
-All `*Cached` variants throw on miss; `maybe*Cached` variants return nil.
+## Binding access APIs
+
+| API | Creates if absent? | Establishes ownership? | VM `notifyListeners()` | Handle recreate/dispose |
+|---|---:|---:|---:|---:|
+| `watch(spec)` | Yes | Yes | Yes | Yes |
+| `read(spec)` | Yes | Yes | No | Yes |
+| `watchCached(key:/tag:)` | No | Yes | Yes | Yes |
+| `readCached(key:/tag:)` | No | Yes | No | Yes |
+| `maybeWatchCached(key:/tag:)` | No; returns `nil` | Yes on hit | Yes | Yes |
+| `maybeReadCached(key:/tag:)` | No; returns `nil` | Yes on hit | No | Yes |
+| `watchCachesByTag(_:)` | No; returns all hits | Yes | Yes | Yes |
+| `readCachesByTag(_:)` | No; returns all hits | Yes | No | Yes |
+
+Normal application code should use `watch(spec)` or `read(spec)`. Cached APIs query an instance that another path must already have created; they couple the caller to cache identity, creation order, and another owner's lifecycle. Single-result non-`maybe` lookups throw on a miss, and tag lookup can be ambiguous when several instances share a tag.
+
+`listen`, `listenState`, and `listenStateSelect` use `read` internally and automatically remove their side-effect subscriptions when the binding disposes. Do not put a `listen` call in a repeatedly evaluated resolver property.
+
+## Lifecycle controls and ownership
+
+- `recycle(vm)` is a destructive global escape hatch: it removes every direct and parent owner path and disposes the shared object, including an `aliveForever` object. The next resolver-property access creates a fresh instance.
+- `recreate(vm)` replaces the object while preserving active owner paths and moving binding-owned watch/listen subscriptions to the replacement.
+- `aliveForever` skips automatic disposal when ownership reaches zero; it does not prevent explicit `recycle` or `InstanceManager.shared.debugReset()`.
+- Direct and parent-propagated paths are source-aware. `onBind` runs for the first source of a visible binding id, and `onUnbind` for the last source.
+
+Construction and dependency graphs are checked. Recursive construction, runtime ownership cycles, and nested unkeyed `aliveForever` dependencies fail fast on the main actor. Failed or reset-invalidated recreation never installs a detached replacement into a dead handle.
 
 ## Fine-grained observation
 
@@ -189,6 +222,8 @@ StateViewModelValueWatcher(
 ```
 
 Only `name` or `age` changes trigger a rebuild; other fields in `state` are ignored.
+
+Use `@ReadViewModel` with selector-based observation so the broad ViewModel subscription from `watch` does not also rebuild the view. Full-state equality uses the `StateViewModel` initializer's local `equals`, then `ViewModelConfig.equals`, then reference identity for class values (value types are treated as changed without a comparator). Selected values use Swift `Equatable` comparison.
 
 ## ObservableValue
 
@@ -240,6 +275,16 @@ struct MyApp: App {
 
 ## Testing
 
+Tests must run single-threaded and in XCTest runner order:
+
+```bash
+swift test --no-parallel
+```
+
+Do not enable `--parallel`, test sharding, or concurrent suites. The registry,
+global configuration, lifecycle observers, and spec proxies are mutable
+process-global state that tests reset between cases.
+
 ```swift
 func test_with_mock() {
     counterSpec.setProxy(ViewModelSpec { MockCounterViewModel() })
@@ -249,6 +294,20 @@ func test_with_mock() {
     let vm = binding.watch(counterSpec)
     XCTAssertTrue(vm is MockCounterViewModel)
     binding.dispose()
+}
+```
+
+Keep constructor calls inside specs and resolve test instances through a `ViewModelBinding`; do not construct a managed ViewModel directly in a test body or retain one in a long-lived test property. Dispose the binding with `defer` so lifecycle behavior remains part of the test:
+
+```swift
+@MainActor
+func test_counter() {
+    let binding = ViewModelBinding()
+    defer { binding.dispose() }
+
+    let counter = binding.read(counterSpec)
+    counter.increment()
+    XCTAssertEqual(counter.state.count, 1)
 }
 ```
 

@@ -8,8 +8,7 @@ import Combine
 /// - listener registration and fan-out (`listen`, `notifyListeners`, `update`),
 /// - lifecycle hooks (`onCreate`, `onBind`, `onUnbind`, `onDispose`),
 /// - cleanup registration (`addDispose`),
-/// - access to the owning binding via `viewModelBinding`, which the binding
-///   itself injects into the VM's `refHandler` immediately after construction.
+/// - a stable generation-owned `viewModelBinding` for resolving child modules.
 ///
 /// Every `ViewModel` is also a SwiftUI `ObservableObject`: `notifyListeners()`
 /// emits `objectWillChange` before fanning out to the internal listener list,
@@ -125,24 +124,30 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     public var hasListeners: Bool { !listeners.isEmpty }
 
     private let autoDispose = AutoDisposeController()
+    private var dependencyBinding: ViewModelDependencyBinding?
 
-    /// Internal dependency resolver. Exposed via `@_spi(Internal)` to the rest of the
-    /// framework; consumers access bindings through `viewModelBinding` instead.
+    /// Source-aware owner diagnostics for this ViewModel generation.
     @_spi(Internal) public let refHandler = ViewModelBindingHandler()
 
-    /// Entry point used inside a ViewModel subclass to access other ViewModels.
-    ///
-    /// Resolution order (driven by `refHandler`):
-    /// 1. Parent binding stored on this VM by the registry. Available from the
-    ///    moment `factory.build()` returns — so `onCreate(_:)`, every regular
-    ///    method, `Task.detached`, Combine sinks, and UIKit callbacks all see it.
-    /// 2. `ViewModelBinding.currentBuilding` — fallback used only while the VM's
-    ///    own `init()` body is running (before the registry has had a chance to
-    ///    inject step 1).
-    /// 3. Trap — using `viewModelBinding` outside any binding context is a programmer error.
+    /// Stable dependency scope owned by this object generation.
     open var viewModelBinding: ViewModelBinding {
-        refHandler.binding
+        precondition(
+            !isDisposed,
+            "Cannot resolve dependencies from a disposed \(type(of: self))."
+        )
+        if let dependencyBinding { return dependencyBinding }
+        let created = ViewModelDependencyBinding(
+            parent: self,
+            parentHandler: refHandler,
+            onDependencyUpdate: { [weak self] dependency in
+                self?.handleDependencyUpdate(dependency)
+            }
+        )
+        dependencyBinding = created
+        return created
     }
+
+    var dependencyBindingIfCreated: ViewModelDependencyBinding? { dependencyBinding }
 
     public init() {}
 
@@ -169,17 +174,28 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
             viewModelLog("\(type(of: self)): notifyListeners after Disposed")
             return
         }
-        objectWillChange.send()
-        // Snapshot first so callbacks can add / remove listeners without breaking iteration.
-        let snapshot = Array(listeners.values)
-        for listener in snapshot {
-            do {
-                try runCatching(listener)
-            } catch {
-                reportViewModelError(
-                    error, type: .listener, context: "notifyListeners error")
+        runInViewModelUpdateTransaction {
+            objectWillChange.send()
+            // Snapshot first so callbacks can add / remove listeners without breaking iteration.
+            let snapshot = Array(listeners.values)
+            for listener in snapshot {
+                do {
+                    try runCatching(listener)
+                } catch {
+                    reportViewModelError(
+                        error, type: .listener, context: "notifyListeners error")
+                }
             }
         }
+    }
+
+    /// Called before a watched child update is forwarded through this ViewModel.
+    open func onDependencyNotify(_ viewModel: ViewModel) {}
+
+    private func handleDependencyUpdate(_ dependency: ViewModel) {
+        guard !isDisposed else { return }
+        onDependencyNotify(dependency)
+        notifyListeners()
     }
 
     /// Run `block` synchronously and then call `notifyListeners()` exactly once.
@@ -245,6 +261,13 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
         } catch {
             reportViewModelError(
                 error, type: .dispose, context: "\(type(of: self)) autoDispose error")
+        }
+        do {
+            try runCatching { dependencyBinding?.dispose() }
+        } catch {
+            reportViewModelError(
+                error, type: .dispose,
+                context: "\(type(of: self)) dependency binding dispose error")
         }
         do {
             try runCatching { refHandler.dispose() }

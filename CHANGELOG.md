@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-27
+
+Aligns AppleViewModel's module-composition, dependency ownership, and instance
+identity semantics with Flutter `view_model`.
+
+### Changed
+
+- VM-to-VM dependencies now resolve through a stable binding owned by each parent object generation. Unkeyed children retain identity while shared-parent root owners join or leave, and child lifetime cannot be shorter than the parent generation that owns it.
+- Unkeyed specs now reuse one instance per resolved ViewModel type within a binding; different bindings remain isolated. Use explicit keys for cross-binding sharing or multiple same-type instances in one binding.
+- Owner tracking is source-aware, so direct and parent-propagated paths with the same visible binding id can be released independently.
+- Synchronous dependency propagation is transaction-based and updates each binding at most once in diamond graphs.
+- `recycle(_:)` now finds and disposes the managed instance globally, including children owned only through a parent. Added `recreate(_:builder:)` to replace an object while preserving active owners.
+- Align README, project guidance, and the bundled skill with Flutter `view_model` terminology: spec-first resolution, managed non-singleton modules by default, resolver properties, advanced cached lookup, and source-aware lifecycle controls.
+
+### Safety
+
+- Nested `aliveForever` dependencies must use an explicit key.
+- Construction/recreation uses checked transactions; reset-invalidated replacements are disposed instead of being installed into a dead handle.
+
+### Tests
+
+- Add shared-parent handoff, multi-path ownership, global child recycle, watch/read bubbling, diamond de-duplication, recreation, retained-parent, and reset-during-recreate coverage.
+- Require the suite to run serially with `swift test --no-parallel` because registry, configuration, lifecycle, and proxy state are process-global.
+
 ## [0.3.3] - 2026-05-11
 
 ### Changed

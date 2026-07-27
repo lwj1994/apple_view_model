@@ -53,24 +53,43 @@ open class ViewModelBinding {
     /// Globally unique id used to key reference counts on `InstanceHandle`.
     public let id: String = "Binding#\(UUID().uuidString)"
 
+    var isDependencyBinding: Bool { false }
+
     public private(set) var isDisposed: Bool = false
 
     public var isPaused: Bool { pauseController.isPaused }
 
     /// Registered VMs for which we are listening to `notifyListeners`.
     /// Used to de-duplicate repeated `addListener` calls on the same VM.
-    private var watchedViewModels: [ObjectIdentifier: Bool] = [:]
+    private var watchedViewModels: [ObjectIdentifier: () -> Void] = [:]
 
     /// Per-subscription teardown closures (from `listen`, `listenState`, etc.).
     private var disposes: [() -> Void] = []
+    private var subscriptions: [BindingSubscription] = []
 
     /// Set to true when a notification arrives while we are paused. Drained on resume.
     private var hasMissedUpdates: Bool = false
 
+    private var instanceAttachedHook: ((any _AnyHandle, ViewModel) -> Void)?
+    private var instanceDetachedHook: ((any _AnyHandle, ViewModel) -> Void)?
+    private var instanceRecreatedHook: ((any _AnyHandle, ViewModel, ViewModel) -> Void)?
+    private var viewModelUpdateHook: ((ViewModel) -> Void)?
+    private let defaultViewModelKey = AnyHashable(ViewModelPrivateKey())
+
     private lazy var instanceController: AutoDisposeInstanceController = {
-        AutoDisposeInstanceController(binding: self, onRecreate: { [weak self] in
-            self?.onUpdate()
-        })
+        AutoDisposeInstanceController(
+            binding: self,
+            onRecreate: { [weak self] in self?.handleInstanceChange() },
+            onInstanceAttached: { [weak self] handle, viewModel in
+                self?.handleInstanceAttached(handle, viewModel: viewModel)
+            },
+            onInstanceDetached: { [weak self] handle, viewModel in
+                self?.handleInstanceDetached(handle, viewModel: viewModel)
+            },
+            onInstanceRecreated: { [weak self] handle, previous, current in
+                self?.handleInstanceRecreated(handle, previous: previous, current: current)
+            }
+        )
     }()
 
     private lazy var _pauseController: PauseAwareController = makePauseController()
@@ -78,6 +97,39 @@ open class ViewModelBinding {
     public var pauseController: PauseAwareController { _pauseController }
 
     public init() {}
+
+    private func handleInstanceChange() {
+        if markViewModelBindingUpdated(self) { onUpdate() }
+    }
+
+    private func handleInstanceAttached(_ handle: any _AnyHandle, viewModel: ViewModel) {
+        instanceAttachedHook?(handle, viewModel)
+    }
+
+    private func handleInstanceDetached(_ handle: any _AnyHandle, viewModel: ViewModel) {
+        watchedViewModels.removeValue(forKey: ObjectIdentifier(viewModel))?()
+        let attached = subscriptions.filter { $0.isAttached(to: viewModel) }
+        for subscription in attached {
+            subscription.dispose()
+            subscriptions.removeAll { $0 === subscription }
+        }
+        instanceDetachedHook?(handle, viewModel)
+    }
+
+    private func handleInstanceRecreated(
+        _ handle: any _AnyHandle,
+        previous: ViewModel,
+        current: ViewModel
+    ) {
+        if let disposer = watchedViewModels.removeValue(forKey: ObjectIdentifier(previous)) {
+            disposer()
+            addListener(current)
+        }
+        for subscription in subscriptions where subscription.isAttached(to: previous) {
+            subscription.move(to: current)
+        }
+        instanceRecreatedHook?(handle, previous, current)
+    }
 
     /// Override to install default pause providers for a subclass.
     open func makePauseController() -> PauseAwareController {
@@ -153,8 +205,7 @@ open class ViewModelBinding {
         onChanged: @escaping () -> Void
     ) {
         let vm = read(factory)
-        let disposer = vm.listen(onChanged: onChanged)
-        disposes.append(disposer)
+        addSubscription(vm) { value in value.listen(onChanged: onChanged) }
     }
 
     public func listenState<VM, S>(
@@ -162,8 +213,7 @@ open class ViewModelBinding {
         onChanged: @escaping (S?, S) -> Void
     ) where VM: StateViewModel<S> {
         let vm = read(factory)
-        let disposer = vm.listenState(onChanged: onChanged)
-        disposes.append(disposer)
+        addSubscription(vm) { value in value.listenState(onChanged: onChanged) }
     }
 
     public func listenStateSelect<VM, S, R: Equatable>(
@@ -172,15 +222,30 @@ open class ViewModelBinding {
         onChanged: @escaping (R?, R) -> Void
     ) where VM: StateViewModel<S> {
         let vm = read(factory)
-        let disposer = vm.listenStateSelect(selector: selector, onChanged: onChanged)
-        disposes.append(disposer)
+        addSubscription(vm) { value in
+            value.listenStateSelect(selector: selector, onChanged: onChanged)
+        }
     }
 
     /// Force-dispose a specific ViewModel. Subsequent `watch` / `read` calls will
     /// rebuild it.
     public func recycle<VM: ViewModel>(_ viewModel: VM) {
-        instanceController.recycle(viewModel)
-        onUpdate()
+        precondition(
+            InstanceManager.shared.recycle(viewModel),
+            "Cannot recycle \(VM.self): instance not found in registry."
+        )
+    }
+
+    /// Replace one managed object while preserving all active owner paths.
+    @discardableResult
+    public func recreate<VM: ViewModel>(
+        _ viewModel: VM,
+        builder: (@MainActor () -> VM)? = nil
+    ) throws -> VM {
+        let owner = viewModel.refHandler.primaryOwner ?? self
+        return try ViewModelBinding.withBuilding(owner) {
+            try InstanceManager.shared.recreate(viewModel, builder: builder)
+        }
     }
 
     // MARK: - Pause provider management
@@ -198,7 +263,10 @@ open class ViewModelBinding {
     open func dispose() {
         if isDisposed { return }
         isDisposed = true
+        for disposer in Array(watchedViewModels.values) { disposer() }
         watchedViewModels.removeAll()
+        for subscription in subscriptions { subscription.dispose() }
+        subscriptions.removeAll()
         for d in disposes {
             d()
         }
@@ -256,47 +324,38 @@ open class ViewModelBinding {
 
     /// Creates a ViewModel using the supplied factory.
     ///
-    /// Resolution of `viewModelBinding` from inside the VM's `init()` and
-    /// `onCreate(_:)` is wired through two layers, both established here:
-    ///
-    /// - During `factory.build()` (which runs the VM's `init()`), the builder
-    ///   closure pushes `self` onto `ViewModelBinding.buildingStack` so
-    ///   `ViewModelBindingHandler.binding` can read it as a fallback.
-    /// - Immediately after `factory.build()` returns and *before*
-    ///   `InstanceHandle.init` calls `onCreate(_:)`, the same closure calls
-    ///   `vm.refHandler.addRef(self)`. From this point on `viewModelBinding`
-    ///   reads from `dependencyBindings` and is no longer sensitive to
-    ///   execution context — `Task.detached`, old Combine sinks, UIKit
-    ///   target/action callbacks all see the binding.
-    ///
-    /// `recreate` reuses the same builder closure, so a rebuilt VM goes
-    /// through the same push/addRef sequence.
+    /// The full registry call runs with this binding on the construction stack,
+    /// covering both `init()` and `onCreate(_:)`. A ViewModel that resolves a
+    /// child during construction creates its own stable dependency binding and
+    /// uses the stack only to discover the initial external owner. Afterward,
+    /// that generation-owned binding is independent of any particular root.
     private func createViewModel<VM: ViewModel>(
         factory: any ViewModelFactory<VM>,
         listen: Bool
     ) -> VM {
         precondition(!isDisposed, "Cannot create \(VM.self): binding is disposed.")
-        let key: AnyHashable = factory.key() ?? AnyHashable(UUID())
+        let configuredKey = factory.key()
         let tag = factory.tag()
         let aliveForever = factory.aliveForever()
+        if isDependencyBinding, configuredKey == nil, aliveForever {
+            preconditionFailure(
+                "An aliveForever ViewModel resolved from another ViewModel must use "
+                    + "an explicit key. A parent-private default key becomes unreachable "
+                    + "after that parent generation is disposed."
+            )
+        }
+        let key = configuredKey ?? defaultViewModelKey
 
         let instanceFactory = InstanceFactory<VM>(
-            builder: { [weak self] in
-                guard let self else {
-                    preconditionFailure("ViewModelBinding deallocated mid-build")
-                }
-                return ViewModelBinding.withBuilding(self) {
-                    let vm = factory.build()
-                    vm.refHandler.addRef(self)
-                    return vm
-                }
-            },
+            builder: { factory.build() },
             arg: InstanceArg(key: key, tag: tag, aliveForever: aliveForever)
         )
 
         let vm: VM
         do {
-            vm = try instanceController.getInstance(VM.self, factory: instanceFactory)
+            vm = try ViewModelBinding.withBuilding(self) {
+                try instanceController.getInstance(VM.self, factory: instanceFactory)
+            }
         } catch {
             preconditionFailure("ViewModel create failed: \(error)")
         }
@@ -311,19 +370,76 @@ open class ViewModelBinding {
     /// `onUpdate()`. Calls are deduplicated per VM.
     private func addListener(_ vm: ViewModel) {
         let key = ObjectIdentifier(vm)
-        if watchedViewModels[key] == true { return }
-        watchedViewModels[key] = true
-        let disposer = vm.listen(onChanged: { [weak self] in
-            guard let self else { return }
+        if watchedViewModels[key] != nil { return }
+        let disposer = vm.listen(onChanged: { [weak self, weak vm] in
+            guard let self, let vm else { return }
             if self.isDisposed { return }
             if self._pauseController.isPaused {
                 self.hasMissedUpdates = true
                 viewModelLog("\(type(of: self)) paused, delay rebuild")
                 return
             }
-            self.onUpdate()
+            if markViewModelBindingUpdated(self) {
+                self.onViewModelUpdate(vm)
+            }
         })
-        disposes.append(disposer)
+        watchedViewModels[key] = disposer
+    }
+
+    private func addSubscription<VM: ViewModel>(
+        _ viewModel: VM,
+        attach: @escaping (VM) -> () -> Void
+    ) {
+        subscriptions.append(BindingSubscription(
+            viewModel: viewModel,
+            attach: { value in attach(value as! VM) }
+        ))
+    }
+
+    private func onViewModelUpdate(_ viewModel: ViewModel) {
+        if let viewModelUpdateHook {
+            viewModelUpdateHook(viewModel)
+        } else {
+            onUpdate()
+        }
+    }
+
+    func installDependencyHooks(
+        attached: @escaping (any _AnyHandle, ViewModel) -> Void,
+        detached: @escaping (any _AnyHandle, ViewModel) -> Void,
+        recreated: @escaping (any _AnyHandle, ViewModel, ViewModel) -> Void,
+        updated: @escaping (ViewModel) -> Void
+    ) {
+        instanceAttachedHook = attached
+        instanceDetachedHook = detached
+        instanceRecreatedHook = recreated
+        viewModelUpdateHook = updated
+    }
+}
+
+@MainActor
+private final class BindingSubscription {
+    private var viewModel: ViewModel
+    private let attach: (ViewModel) -> () -> Void
+    private var disposer: (() -> Void)?
+
+    init(viewModel: ViewModel, attach: @escaping (ViewModel) -> () -> Void) {
+        self.viewModel = viewModel
+        self.attach = attach
+        disposer = attach(viewModel)
+    }
+
+    func isAttached(to value: ViewModel) -> Bool { viewModel === value }
+
+    func move(to value: ViewModel) {
+        disposer?()
+        viewModel = value
+        disposer = attach(value)
+    }
+
+    func dispose() {
+        disposer?()
+        disposer = nil
     }
 }
 

@@ -15,9 +15,9 @@ public struct ViewModelConfig: Sendable {
 
     /// Global state-equality policy.
     ///
-    /// If provided, `StateViewModel.setState` and `listenStateSelect` use this
-    /// closure instead of the default `===` (for reference types) / "always differ"
-    /// (for value types).
+    /// If provided, `StateViewModel.setState` uses this closure instead of the
+    /// default `===` (for reference types) / "always differ" (for value types).
+    /// Selector listeners use their `Equatable` selected value instead.
     ///
     /// Resolution order: instance-level `equals` → this global policy → default.
     public let equals: (@Sendable (Any?, Any?) -> Bool)?

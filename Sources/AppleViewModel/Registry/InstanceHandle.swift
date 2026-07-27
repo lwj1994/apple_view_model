@@ -22,9 +22,10 @@ final class InstanceHandle<Value: AnyObject> {
     /// used by `findNewlyInstance`.
     let index: Int
 
-    private var bindingIdList: [String] = []
+    private var bindingSources: [String: Set<ObjectIdentifier>] = [:]
+    private var directBindingSources: [String: NSObject] = [:]
 
-    var bindingIds: [String] { bindingIdList }
+    var bindingIds: [String] { Array(bindingSources.keys) }
     var isDisposed: Bool { disposed }
 
     /// Action currently being processed, or the last one observed if the handle
@@ -62,22 +63,42 @@ final class InstanceHandle<Value: AnyObject> {
     }
 
     func contains(bindingId: String) -> Bool {
-        bindingIdList.contains(bindingId)
+        bindingSources[bindingId] != nil
     }
 
-    /// Append an additional `bindingId`. Duplicates and `nil` are ignored.
+    /// Add the direct ownership source for a binding id.
     func bind(_ id: String?) {
-        guard let id, !disposed, !bindingIdList.contains(id) else { return }
-        bindingIdList.append(id)
-        notifyBind(id: id)
+        guard let id, !disposed else { return }
+        let source = directBindingSources[id] ?? NSObject()
+        directBindingSources[id] = source
+        bindFrom(id, source: source)
+    }
+
+    /// Add one identity-tracked ownership path for a visible binding id.
+    func bindFrom(_ id: String?, source: AnyObject) {
+        guard let id, !disposed else { return }
+        var sources = bindingSources[id] ?? []
+        guard sources.insert(ObjectIdentifier(source)).inserted else { return }
+        bindingSources[id] = sources
+        if sources.count == 1 { notifyBind(id: id) }
     }
 
     /// Remove a single reference. Auto-disposes when the list becomes empty, unless
     /// `aliveForever` is set.
     func unbind(_ id: String) {
-        guard !disposed else { return }
-        guard let idx = bindingIdList.firstIndex(of: id) else { return }
-        bindingIdList.remove(at: idx)
+        guard let source = directBindingSources.removeValue(forKey: id) else { return }
+        unbindFrom(id, source: source)
+    }
+
+    /// Remove one ownership path. Lifecycle unbind occurs after the last path leaves.
+    func unbindFrom(_ id: String, source: AnyObject) {
+        guard !disposed, var sources = bindingSources[id] else { return }
+        guard sources.remove(ObjectIdentifier(source)) != nil else { return }
+        if !sources.isEmpty {
+            bindingSources[id] = sources
+            return
+        }
+        bindingSources.removeValue(forKey: id)
         if let lifecycle = value as? InstanceLifeCycle {
             do {
                 try runCatching { lifecycle.onUnbind(arg, bindingId: id) }
@@ -86,7 +107,7 @@ final class InstanceHandle<Value: AnyObject> {
                     error, type: .lifecycle, context: "\(type(of: lifecycle)) onUnbind error")
             }
         }
-        if bindingIdList.isEmpty {
+        if bindingSources.isEmpty {
             recycle()
         }
     }
@@ -96,7 +117,7 @@ final class InstanceHandle<Value: AnyObject> {
     func unbindAll(force: Bool = false) {
         guard !disposed else { return }
         if arg.aliveForever, !force { return }
-        for id in bindingIdList {
+        for id in Array(bindingSources.keys) {
             if let lifecycle = value as? InstanceLifeCycle {
                 do {
                     try runCatching { lifecycle.onUnbind(arg, bindingId: id) }
@@ -106,7 +127,8 @@ final class InstanceHandle<Value: AnyObject> {
                 }
             }
         }
-        bindingIdList.removeAll()
+        bindingSources.removeAll()
+        directBindingSources.removeAll()
         recycle(force: force)
     }
 
@@ -121,19 +143,58 @@ final class InstanceHandle<Value: AnyObject> {
         guard let previous = value else {
             throw ViewModelError("Cannot recreate \(Value.self) instance. Instance is disposed.")
         }
-        let activeBindings = bindingIdList
-        let recreated = (builder ?? factory)()
+        let activeBindings = bindingIds
+        let key = arg.key!
+        let recreated = try runInViewModelConstruction(
+            Value.self,
+            key: key,
+            isImplicit: key.base is ViewModelPrivateKey,
+            body: builder ?? factory
+        )
+        if !isActive(with: previous) {
+            try abortInvalidatedRecreate(previous: previous, recreated: recreated)
+        }
         callInstanceDispose(previous)
+        if !isActive(with: previous) {
+            try abortInvalidatedRecreate(previous: previous, recreated: recreated)
+        }
         value = recreated
         notifyCreate(arg: arg)
+        try requireActiveRecreatedInstance(recreated)
         for id in activeBindings {
             notifyBind(id: id)
+            try requireActiveRecreatedInstance(recreated)
         }
         action = .recreate
         lastAction = .recreate
-        notifyListeners()
+        runInViewModelUpdateTransaction(notifyListeners)
         action = nil
         return recreated
+    }
+
+    private func isActive(with expected: Value) -> Bool {
+        !disposed && value === expected
+    }
+
+    private func abortInvalidatedRecreate(previous: Value, recreated: Value) throws -> Never {
+        let replacementIsManaged = isActive(with: recreated)
+        if !replacementIsManaged, recreated !== previous {
+            callInstanceDispose(recreated)
+        }
+        throw ViewModelError(
+            "Cannot recreate \(Value.self) because its handle was disposed or replaced "
+                + "while the builder was running. The detached replacement was disposed "
+                + "and was not installed."
+        )
+    }
+
+    private func requireActiveRecreatedInstance(_ recreated: Value) throws {
+        guard isActive(with: recreated) else {
+            throw ViewModelError(
+                "Cannot recreate \(Value.self) because its handle was disposed or replaced "
+                    + "while the replacement lifecycle was being initialized."
+            )
+        }
     }
 
     /// Subscribe to action transitions on this handle. Returns a cancellation closure.
@@ -151,7 +212,7 @@ final class InstanceHandle<Value: AnyObject> {
         if arg.aliveForever, !force { return }
         action = .dispose
         lastAction = .dispose
-        notifyListeners()
+        runInViewModelUpdateTransaction(notifyListeners)
         action = nil
         onDispose()
     }
@@ -161,6 +222,8 @@ final class InstanceHandle<Value: AnyObject> {
         disposed = true
         callInstanceDispose(value)
         value = nil
+        bindingSources.removeAll()
+        directBindingSources.removeAll()
         listeners.removeAll()
     }
 

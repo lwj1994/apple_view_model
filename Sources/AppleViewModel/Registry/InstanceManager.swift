@@ -13,6 +13,7 @@ public final class InstanceManager {
     public static let shared = InstanceManager()
 
     private var stores: [ObjectIdentifier: AnyObject] = [:]
+    private(set) var isResetting = false
 
     private init() {}
 
@@ -69,7 +70,19 @@ public final class InstanceManager {
     /// Rebuild an existing instance. Invoked only through `ViewModelBinding.recycle`.
     @discardableResult
     func recreate<Value: AnyObject>(_ value: Value, builder: (@MainActor () -> Value)? = nil) throws -> Value {
-        try store(for: Value.self).recreate(value, builder: builder)
+        try requireNotResetting()
+        return try store(for: Value.self).recreate(value, builder: builder)
+    }
+
+    /// Force-dispose the handle that owns `value`, regardless of which binding
+    /// originally resolved it.
+    @discardableResult
+    func recycle(_ value: AnyObject) -> Bool {
+        guard !isResetting else { return false }
+        for case let store as any _StoreRecyclable in stores.values {
+            if store._tryRecycle(value) { return true }
+        }
+        return false
     }
 
     /// Unified handle resolver.
@@ -82,6 +95,7 @@ public final class InstanceManager {
         _ type: Value.Type,
         factory: InstanceFactory<Value>? = nil
     ) throws -> InstanceHandle<Value> {
+        try requireNotResetting()
         if factory == nil || factory!.isEmpty {
             let bindingId = factory?.arg.bindingId
             let tag = factory?.arg.tag
@@ -109,7 +123,8 @@ public final class InstanceManager {
 
     /// All handles that currently carry `tag` for the requested type.
     func getHandles<Value: AnyObject>(byTag tag: AnyHashable, type: Value.Type) -> [InstanceHandle<Value>] {
-        store(for: type).instances(byTag: tag)
+        if isResetting { return [] }
+        return store(for: type).instances(byTag: tag)
     }
 
     // MARK: - Test helpers
@@ -120,10 +135,19 @@ public final class InstanceManager {
     /// Drop every bucket, force-disposing any remaining handles. Intended for
     /// use between unit tests to guarantee isolation.
     public func debugReset() {
+        guard !isResetting else { return }
+        isResetting = true
+        defer { isResetting = false }
         let snapshot = stores
         stores.removeAll()
         for case let store as any _StoreDisposable in snapshot.values {
             store._disposeNow()
+        }
+    }
+
+    private func requireNotResetting() throws {
+        if isResetting {
+            throw ViewModelError("Cannot access ViewModels while InstanceManager is resetting.")
         }
     }
 }
@@ -134,6 +158,15 @@ protocol _StoreDisposable: AnyObject {
     func _disposeNow()
 }
 
+@MainActor
+protocol _StoreRecyclable: AnyObject {
+    func _tryRecycle(_ value: AnyObject) -> Bool
+}
+
 extension Store: _StoreDisposable {
     func _disposeNow() { dispose() }
+}
+
+extension Store: _StoreRecyclable {
+    func _tryRecycle(_ value: AnyObject) -> Bool { tryRecycle(value) }
 }

@@ -1,55 +1,110 @@
 import Foundation
 
-/// Dependency resolver attached to every `ViewModel`.
-///
-/// Equivalent to the Dart `ViewModelBindingHandler` paired with the zone-based
-/// dependency resolution. `ViewModel.viewModelBinding` reads from this handler;
-/// lookup order is:
-///
-/// 1. `dependencyBindings.first` — populated by `ViewModelBinding.createViewModel`
-///    inside the builder closure immediately after `factory.build()` returns, and
-///    also by `AutoDisposeInstanceController.getInstance` for cache hits. Once
-///    set, this is the only path consulted; it survives across `Task.detached`,
-///    old Combine sinks, UIKit target/action callbacks, etc.
-/// 2. `ViewModelBinding.currentBuilding` — top of a `@MainActor`-local stack
-///    pushed by `ViewModelBinding.withBuilding(_:_:)` for the duration of a
-///    `factory.build()` call. Used only as a fallback during the VM's `init()`
-///    body, before `addRef(...)` has been able to attach the binding.
-///
-/// If neither is available the caller is using `viewModelBinding` outside any
-/// context, which is a programmer error.
+/// Source-aware owner registry attached to every managed ViewModel generation.
 @MainActor
 public final class ViewModelBindingHandler {
+    private struct OwnerEntry {
+        let binding: ViewModelBinding
+        var sources: Set<ObjectIdentifier>
+    }
+
     private var dependencyBindings: [ViewModelBinding] = []
+    private var refSources: [ObjectIdentifier: OwnerEntry] = [:]
+    private var ownerChangeListeners: [
+        UUID: ([String], String?, String?) -> Void
+    ] = [:]
 
     public init() {}
 
     @_spi(Internal)
-    public func addRef(_ binding: ViewModelBinding) {
-        if !dependencyBindings.contains(where: { $0 === binding }) {
+    public var owners: [ViewModelBinding] { dependencyBindings }
+
+    @_spi(Internal)
+    public var externalOwners: [ViewModelBinding] {
+        dependencyBindings.filter { !$0.isDependencyBinding }
+    }
+
+    @_spi(Internal)
+    public var constructionExternalOwners: [ViewModelBinding] {
+        let current = externalOwners
+        if !current.isEmpty { return current }
+        guard
+            let building = ViewModelBinding.currentBuilding,
+            !building.isDisposed,
+            !building.isDependencyBinding
+        else { return [] }
+        return [building]
+    }
+
+    @_spi(Internal)
+    public var primaryOwner: ViewModelBinding? { dependencyBindings.first }
+
+    @_spi(Internal)
+    @discardableResult
+    public func addOwnerChangeListener(
+        _ listener: @escaping ([String], String?, String?) -> Void
+    ) -> () -> Void {
+        let id = UUID()
+        ownerChangeListeners[id] = listener
+        return { [weak self] in self?.ownerChangeListeners.removeValue(forKey: id) }
+    }
+
+    @_spi(Internal)
+    public func addRef(_ binding: ViewModelBinding, source: AnyObject? = nil) {
+        let previousPrimaryOwner = primaryOwner?.id
+        let bindingIdentity = ObjectIdentifier(binding)
+        let sourceIdentity = ObjectIdentifier(source ?? binding)
+        var entry = refSources[bindingIdentity]
+            ?? OwnerEntry(binding: binding, sources: [])
+        guard entry.sources.insert(sourceIdentity).inserted else { return }
+        let isFirstSource = entry.sources.count == 1
+        refSources[bindingIdentity] = entry
+        if isFirstSource {
             dependencyBindings.append(binding)
+            notifyOwnerChanges(previousPrimaryOwner: previousPrimaryOwner)
         }
     }
 
     @_spi(Internal)
-    public func removeRef(_ binding: ViewModelBinding) {
+    public func removeRef(_ binding: ViewModelBinding, source: AnyObject? = nil) {
+        let previousPrimaryOwner = primaryOwner?.id
+        let bindingIdentity = ObjectIdentifier(binding)
+        let sourceIdentity = ObjectIdentifier(source ?? binding)
+        guard var entry = refSources[bindingIdentity] else { return }
+        guard entry.sources.remove(sourceIdentity) != nil else { return }
+        if !entry.sources.isEmpty {
+            refSources[bindingIdentity] = entry
+            return
+        }
+        refSources.removeValue(forKey: bindingIdentity)
         dependencyBindings.removeAll { $0 === binding }
+        notifyOwnerChanges(previousPrimaryOwner: previousPrimaryOwner)
     }
 
     @_spi(Internal)
     public func dispose() {
+        let previousPrimaryOwner = primaryOwner?.id
         dependencyBindings.removeAll()
+        refSources.removeAll()
+        notifyOwnerChanges(previousPrimaryOwner: previousPrimaryOwner)
+        ownerChangeListeners.removeAll()
     }
 
     @_spi(Internal)
     public var binding: ViewModelBinding {
-        if let first = dependencyBindings.first {
-            return first
-        }
-        if let current = ViewModelBinding.currentBuilding {
-            return current
-        }
+        if let first = primaryOwner { return first }
+        if let current = ViewModelBinding.currentBuilding { return current }
         preconditionFailure(
-            "No binding available. ViewModel must be used within a ViewModelBinding context.")
+            "No binding available. ViewModel must be used within a ViewModelBinding context."
+        )
+    }
+
+    private func notifyOwnerChanges(previousPrimaryOwner: String?) {
+        guard !ownerChangeListeners.isEmpty else { return }
+        let ownerIds = dependencyBindings.map(\.id)
+        let currentPrimaryOwner = primaryOwner?.id
+        for listener in Array(ownerChangeListeners.values) {
+            listener(ownerIds, previousPrimaryOwner, currentPrimaryOwner)
+        }
     }
 }
