@@ -26,12 +26,9 @@ final class CounterViewModel: StateViewModel<CounterState> {
     }
 }
 
-/// Declare the factory at file scope so every module can reach it.
-/// - `key: "app-counter"` — a single shared instance across the app.
-/// - `aliveForever: true` — keep the state alive even when no view observes it.
-let counterSpec = ViewModelSpec<CounterViewModel>(
-    key: "app-counter",
-    aliveForever: true
-) {
+/// Declare a stable spec at file scope and let the resolving binding own the
+/// instance by default. Add a key or `aliveForever` only when cross-binding
+/// sharing or retention is an explicit requirement.
+let counterSpec = ViewModelSpec<CounterViewModel> {
     CounterViewModel()
 }

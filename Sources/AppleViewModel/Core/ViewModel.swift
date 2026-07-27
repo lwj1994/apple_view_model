@@ -14,9 +14,9 @@ import Combine
 /// emits `objectWillChange` before fanning out to the internal listener list,
 /// so instances can be handed directly to `@StateObject` / `@ObservedObject`.
 ///
-/// Instances are typically created by a `ViewModelBinding` via a
-/// `ViewModelSpec`. Static entry points (`ViewModel.initialize`,
-/// `ViewModel.readCached`) are provided for app-wide setup and lookup.
+/// Instances should normally be resolved by a `ViewModelBinding` from a stable
+/// `ViewModelSpec`. Static cache lookup is an advanced escape hatch for querying
+/// an instance already created by another owner.
 @MainActor
 open class ViewModel: InstanceLifeCycle, ObservableObject {
     // MARK: - Global configuration
@@ -71,8 +71,10 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
 
     // MARK: - Static cache lookup
 
-    /// Fetch a cached ViewModel by key or tag. Throws `ViewModelError` when no match is found
-    /// or when the match has already been disposed.
+    /// Advanced lookup-only API. Fetch an already-created ViewModel by key or
+    /// tag. Throws `ViewModelError` when no match is found or when the match has
+    /// already been disposed. Prefer `ViewModelBinding.read(_:)` with a stable
+    /// spec for normal dependency resolution.
     public static func readCached<T: ViewModel>(
         key: AnyHashable? = nil,
         tag: AnyHashable? = nil
@@ -105,7 +107,8 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
         return vm
     }
 
-    /// Same as `readCached` but returns `nil` on miss instead of throwing.
+    /// Advanced lookup-only API. Same as `readCached` but returns `nil` on miss
+    /// instead of throwing. Prefer spec-based resolution in normal code.
     public static func maybeReadCached<T: ViewModel>(
         key: AnyHashable? = nil,
         tag: AnyHashable? = nil

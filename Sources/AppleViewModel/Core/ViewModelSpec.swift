@@ -1,12 +1,15 @@
 import Foundation
 
-/// The default, zero-argument factory declaration.
+/// The default, zero-argument factory declaration. Keep specs stable (normally
+/// at module/file scope) and pass them to `ViewModelBinding.watch(_:)` or
+/// `ViewModelBinding.read(_:)`; this is the primary resolution path.
 ///
 /// ```swift
 /// let counterSpec = ViewModelSpec<CounterViewModel> {
 ///     CounterViewModel()
 /// }
 ///
+/// // Intentional cross-binding sharing and retention only.
 /// let authSpec = ViewModelSpec<AuthViewModel>(
 ///     key: "auth",
 ///     aliveForever: true,

@@ -8,7 +8,7 @@ import ObjectiveC
 /// Typical UIKit use:
 /// ```swift
 /// final class TodoListView: UIView, ViewModelBindingRefreshable {
-///     private lazy var vm = viewModelBinding.watch(todoSpec)
+///     private var vm: TodoViewModel { viewModelBinding.watch(todoSpec) }
 ///
 ///     func viewModelBindingDidUpdate() {
 ///         setNeedsLayout()

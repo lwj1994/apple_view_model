@@ -167,45 +167,58 @@ open class ViewModelBinding {
 
     // MARK: - Public API
 
-    /// Resolve or create a ViewModel and subscribe to its notifications.
+    /// Primary resolution API. Resolve or create from a stable spec/factory,
+    /// establish ownership, and subscribe to ViewModel notifications.
     @discardableResult
     public func watch<VM: ViewModel>(_ factory: any ViewModelFactory<VM>) -> VM {
         getViewModel(factory: factory, listen: true)
     }
 
-    /// Resolve or create a ViewModel without subscribing. Reference count is still incremented.
+    /// Primary resolution API. Resolve or create from a stable spec/factory
+    /// without subscribing to ViewModel notifications. Ownership and handle
+    /// recreation/disposal observation are still established.
     @discardableResult
     public func read<VM: ViewModel>(_ factory: any ViewModelFactory<VM>) -> VM {
         getViewModel(factory: factory, listen: false)
     }
 
-    /// Find an already-created ViewModel by key or tag and subscribe. Throws on miss.
+    /// Advanced lookup-only API. Find an already-created ViewModel by key or tag
+    /// and subscribe. Throws on miss and never creates an instance. Prefer
+    /// `watch(_:)` with a stable spec for normal dependency resolution.
     public func watchCached<VM: ViewModel>(key: AnyHashable? = nil, tag: AnyHashable? = nil) throws -> VM {
         try requireExistingViewModel(arg: InstanceArg(key: key, tag: tag), listen: true)
     }
 
-    /// Like `watchCached` but does not subscribe.
+    /// Advanced lookup-only API. Like `watchCached` but does not subscribe.
+    /// Prefer `read(_:)` with a stable spec for normal dependency resolution.
     public func readCached<VM: ViewModel>(key: AnyHashable? = nil, tag: AnyHashable? = nil) throws -> VM {
         try requireExistingViewModel(arg: InstanceArg(key: key, tag: tag), listen: false)
     }
 
+    /// Advanced lookup-only API that returns `nil` on a cache miss.
+    /// Prefer `watch(_:)` with a stable spec for normal dependency resolution.
     public func maybeWatchCached<VM: ViewModel>(key: AnyHashable? = nil, tag: AnyHashable? = nil) -> VM? {
         try? watchCached(key: key, tag: tag)
     }
 
+    /// Advanced lookup-only API that returns `nil` on a cache miss.
+    /// Prefer `read(_:)` with a stable spec for normal dependency resolution.
     public func maybeReadCached<VM: ViewModel>(key: AnyHashable? = nil, tag: AnyHashable? = nil) -> VM? {
         try? readCached(key: key, tag: tag)
     }
 
-    /// Batch fetch by tag, subscribing to each matched instance.
+    /// Advanced lookup-only API. Fetch every existing instance with a tag and
+    /// subscribe to each match. Prefer specs for normal dependency resolution.
     public func watchCachesByTag<VM: ViewModel>(_ tag: AnyHashable) -> [VM] {
         let vms: [VM] = instanceController.getInstancesByTag(VM.self, tag: tag, observeRecreate: true)
         for vm in vms { addListener(vm) }
         return vms
     }
 
-    /// Batch fetch by tag without subscribing. Instances are still bound so lifecycle
-    /// cleanup happens on dispose; recreation events are still observed.
+    /// Advanced lookup-only API. Fetch every existing instance with a tag
+    /// without subscribing. Instances are still bound so lifecycle cleanup
+    /// happens on dispose; recreation events are still observed. Prefer specs
+    /// for normal dependency resolution.
     public func readCachesByTag<VM: ViewModel>(_ tag: AnyHashable) -> [VM] {
         instanceController.getInstancesByTag(VM.self, tag: tag, observeRecreate: true)
     }

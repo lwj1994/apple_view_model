@@ -29,7 +29,9 @@ public struct ViewModelBuilder<VM: ViewModel, Content: View>: View {
     }
 }
 
-/// Cache-only builder that looks up an existing instance by share key or tag.
+/// Advanced cache-only builder that looks up an existing instance by share key
+/// or tag. Prefer `ViewModelBuilder(spec)` or `@WatchViewModel(spec)` for normal
+/// UI dependency resolution.
 ///
 /// Equivalent to the Dart `CachedViewModelBuilder`. When no instance is found,
 /// a zero-sized placeholder is rendered and the error is reported via

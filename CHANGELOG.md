@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-27
+
+### Documentation
+
+- Make stable `ViewModelSpec` plus `watch/read` the unambiguous default in the
+  README, bundled skill, project guidance, examples, and public API comments.
+- Separate cached lookup into an advanced-only section and document its cache
+  miss, creation-order, identity, and cross-owner lifecycle coupling.
+- Replace the UIKit `lazy var` example with a computed resolver property and
+  make the sample counter binding-managed by default.
+
 ## [0.4.1] - 2026-07-27
 
 ### Fixed

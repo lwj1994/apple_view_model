@@ -32,7 +32,7 @@ Sources/AppleViewModel/
 4. **VM-to-VM 依赖属于 parent generation**。每个 parent 对象延迟持有一个稳定 dependency binding；它保活已解析 child、实时传播 root owners，并用 source-aware 路径避免 direct/parent 引用互相误删。构造 stack 只负责 init/onCreate 阶段的首批 root owner 发现。
 5. **嵌套依赖用计算属性解析**。不要用 `lazy var`/stored property 缓存 child；显式 recycle/recreate 后必须能重新解析 replacement。
 6. **`@MainActor` 全包覆盖**（除日志外）。对外 API、所有 VM/binding 类型都在主线程；日志 (`viewModelLog`) 和错误上报 (`reportViewModelError`) 是 `nonisolated`，内部读取受锁保护的 `ViewModelGlobalConfig`，任何 actor、后台 `Task`、`@Sendable` 回调里都能安全调用。后台任务仍然通过 `Task.detached` 明确手动切线程。
-7. **稳定 spec 的 `watch/read` 是主入口**。两者都会创建/获取、bind 并观察 handle recreate/dispose；只有 `watch` 监听 VM 自身通知。cached API 只查询已有实例，是高级 escape hatch，不能替代 spec-based 解析。
+7. **稳定 spec 的 `watch/read` 是主入口**。两者都会创建/获取、bind 并观察 handle recreate/dispose；只有 `watch` 监听 VM 自身通知。即使 spec 带 key/tag，也继续传 spec；cached API 只查询其他路径已创建的实例，是高级 escape hatch，不能与主入口并列推荐或替代 spec-based 解析。README、Skill、示例与公开 API 注释都必须保持这个优先级。
 8. **`recycle` 是全局破坏性操作**。它解除全部 direct/parent owner source；`recreate` 才是在保留 owner 与 binding-owned 订阅的前提下替换实例。
 
 ## 边界（明确不做的）

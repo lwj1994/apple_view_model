@@ -24,6 +24,11 @@ Deployment target: **iOS 16+**. Swift 6 language mode with strict concurrency (`
 
 ## Core resolution rules
 
+> [!IMPORTANT]
+> The default path is always **stable spec → `watch(spec)` / `read(spec)`**.
+> A spec may contain a key or tag and should still be passed through these APIs;
+> knowing cache identity is not a reason to bypass the spec.
+
 - Use a stable, module-level `ViewModelSpec`, then resolve it with `watch(spec)` or `read(spec)`. These are the primary APIs for UI hosts, plain bindings, tests, and ViewModel-to-ViewModel dependencies.
 - `watch` and `read` both create or reuse an instance, establish ownership, and observe handle recreation/disposal. `watch` additionally listens to the ViewModel's own `notifyListeners()`.
 - Prefer managed instances over global singletons. A feature, service, repository, coordinator, or domain capability should normally use an unkeyed spec with `aliveForever: false`; the binding graph then owns creation and disposal.
@@ -35,7 +40,7 @@ Deployment target: **iOS 16+**. Swift 6 language mode with strict concurrency (`
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.4.1")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.4.2")
 ```
 
 Add `"AppleViewModel"` to your target dependencies.
@@ -184,10 +189,29 @@ Unkeyed identity is the resolved ViewModel type plus the current binding's priva
 
 ## Binding access APIs
 
+### Primary: spec-based resolution (recommended)
+
+Normal application code should keep a stable spec and use one of these APIs:
+
 | API | Creates if absent? | Establishes ownership? | VM `notifyListeners()` | Handle recreate/dispose |
 |---|---:|---:|---:|---:|
 | `watch(spec)` | Yes | Yes | Yes | Yes |
 | `read(spec)` | Yes | Yes | No | Yes |
+
+Choose `watch` when ViewModel notifications should update the owner. Choose
+`read` for lifecycle-bound access without subscribing to those notifications.
+
+### Advanced: cached lookup
+
+> [!CAUTION]
+> Do not use cached lookup as a substitute for spec-based dependency
+> resolution. It reaches into an instance that another path must already have
+> created, couples the caller to cache identity, creation order, and another
+> owner's lifecycle, and cannot create a missing dependency. Use it only for an
+> intentional cross-owner query of an existing cache entry.
+
+| API | Creates if absent? | Establishes ownership? | VM `notifyListeners()` | Handle recreate/dispose |
+|---|---:|---:|---:|---:|
 | `watchCached(key:/tag:)` | No | Yes | Yes | Yes |
 | `readCached(key:/tag:)` | No | Yes | No | Yes |
 | `maybeWatchCached(key:/tag:)` | No; returns `nil` | Yes on hit | Yes | Yes |
@@ -195,7 +219,9 @@ Unkeyed identity is the resolved ViewModel type plus the current binding's priva
 | `watchCachesByTag(_:)` | No; returns all hits | Yes | Yes | Yes |
 | `readCachesByTag(_:)` | No; returns all hits | Yes | No | Yes |
 
-Normal application code should use `watch(spec)` or `read(spec)`. Cached APIs query an instance that another path must already have created; they couple the caller to cache identity, creation order, and another owner's lifecycle. Single-result non-`maybe` lookups throw on a miss, and tag lookup can be ambiguous when several instances share a tag.
+Single-result non-`maybe` lookups throw on a miss, and tag lookup can be
+ambiguous when several instances share a tag. If the caller has a spec—even a
+keyed or tagged spec—use `watch(spec)` / `read(spec)` instead.
 
 `listen`, `listenState`, and `listenStateSelect` use `read` internally and automatically remove their side-effect subscriptions when the binding disposes. Do not put a `listen` call in a repeatedly evaluated resolver property.
 
