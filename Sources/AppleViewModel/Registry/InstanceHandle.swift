@@ -5,7 +5,6 @@ import Foundation
 /// Responsibilities, mirrored from the Dart `InstanceHandle`:
 /// - invoke `onCreate` once the value is stored,
 /// - maintain the `bindingIds` reference-count list,
-/// - support `recreate` with a replacement builder,
 /// - auto-dispose when `bindingIds` reaches zero (unless `aliveForever`).
 @MainActor
 final class InstanceHandle<Value: AnyObject> {
@@ -14,9 +13,6 @@ final class InstanceHandle<Value: AnyObject> {
 
     /// Identity metadata captured at creation time.
     let arg: InstanceArg
-
-    /// Builder used to rebuild the instance during `recreate()`.
-    let factory: @MainActor () -> Value
 
     /// Monotonic index, set by the owning store. Higher means more recent and is
     /// used by `findNewlyInstance`.
@@ -28,26 +24,17 @@ final class InstanceHandle<Value: AnyObject> {
     var bindingIds: [String] { Array(bindingSources.keys) }
     var isDisposed: Bool { disposed }
 
-    /// Action currently being processed, or the last one observed if the handle
-    /// has already been disposed. `addListener` callers read this to tell
-    /// `.dispose` apart from `.recreate`.
-    var currentAction: InstanceAction? { action ?? (disposed ? lastAction : nil) }
-
     private var listeners: [UUID: (InstanceHandle<Value>) -> Void] = [:]
-    private var action: InstanceAction?
-    private var lastAction: InstanceAction?
     private var disposed = false
 
     init(
         value: Value,
         arg: InstanceArg,
-        index: Int,
-        factory: @escaping @MainActor () -> Value
+        index: Int
     ) {
         self.value = value
         self.arg = arg
         self.index = index
-        self.factory = factory
         notifyCreate(arg: arg)
         if let initialId = arg.bindingId {
             bind(initialId)
@@ -132,72 +119,7 @@ final class InstanceHandle<Value: AnyObject> {
         recycle(force: force)
     }
 
-    /// Replace the underlying instance while keeping the reference list intact.
-    /// All listeners observe `.recreate` in `currentAction` before the new value
-    /// becomes visible.
-    @discardableResult
-    func recreate(builder: (@MainActor () -> Value)? = nil) throws -> Value {
-        if disposed {
-            throw ViewModelError("Cannot recreate \(Value.self) instance. Handle is disposed.")
-        }
-        guard let previous = value else {
-            throw ViewModelError("Cannot recreate \(Value.self) instance. Instance is disposed.")
-        }
-        let activeBindings = bindingIds
-        let key = arg.key!
-        let recreated = try runInViewModelConstruction(
-            Value.self,
-            key: key,
-            isImplicit: key.base is ViewModelPrivateKey,
-            body: builder ?? factory
-        )
-        if !isActive(with: previous) {
-            try abortInvalidatedRecreate(previous: previous, recreated: recreated)
-        }
-        callInstanceDispose(previous)
-        if !isActive(with: previous) {
-            try abortInvalidatedRecreate(previous: previous, recreated: recreated)
-        }
-        value = recreated
-        notifyCreate(arg: arg)
-        try requireActiveRecreatedInstance(recreated)
-        for id in activeBindings {
-            notifyBind(id: id)
-            try requireActiveRecreatedInstance(recreated)
-        }
-        action = .recreate
-        lastAction = .recreate
-        runInViewModelUpdateTransaction(notifyListeners)
-        action = nil
-        return recreated
-    }
-
-    private func isActive(with expected: Value) -> Bool {
-        !disposed && value === expected
-    }
-
-    private func abortInvalidatedRecreate(previous: Value, recreated: Value) throws -> Never {
-        let replacementIsManaged = isActive(with: recreated)
-        if !replacementIsManaged, recreated !== previous {
-            callInstanceDispose(recreated)
-        }
-        throw ViewModelError(
-            "Cannot recreate \(Value.self) because its handle was disposed or replaced "
-                + "while the builder was running. The detached replacement was disposed "
-                + "and was not installed."
-        )
-    }
-
-    private func requireActiveRecreatedInstance(_ recreated: Value) throws {
-        guard isActive(with: recreated) else {
-            throw ViewModelError(
-                "Cannot recreate \(Value.self) because its handle was disposed or replaced "
-                    + "while the replacement lifecycle was being initialized."
-            )
-        }
-    }
-
-    /// Subscribe to action transitions on this handle. Returns a cancellation closure.
+    /// Subscribe to this handle's disposal notification. Returns a cancellation closure.
     func addListener(_ listener: @escaping (InstanceHandle<Value>) -> Void) -> () -> Void {
         let id = UUID()
         listeners[id] = listener
@@ -210,10 +132,7 @@ final class InstanceHandle<Value: AnyObject> {
 
     private func recycle(force: Bool = false) {
         if arg.aliveForever, !force { return }
-        action = .dispose
-        lastAction = .dispose
         runInViewModelUpdateTransaction(notifyListeners)
-        action = nil
         onDispose()
     }
 
@@ -269,11 +188,4 @@ final class InstanceHandle<Value: AnyObject> {
     private func runCatching(_ block: () throws -> Void) throws {
         try block()
     }
-}
-
-/// Actions observable on an `InstanceHandle`. Listeners inspect
-/// `handle.currentAction` inside their callback to distinguish the two.
-enum InstanceAction {
-    case dispose
-    case recreate
 }

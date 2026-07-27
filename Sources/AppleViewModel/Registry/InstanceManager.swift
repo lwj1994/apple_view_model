@@ -31,8 +31,8 @@ public final class InstanceManager {
             guard let self, let created = createdRef else { return }
             // Only drop the bucket if the current store really is the one we made,
             // and it is genuinely empty. This matches the Dart `if (!identical...)`
-            // guard that defends against a replacement store being installed in the
-            // same map slot.
+            // guard that defends against a newer store being installed in the same
+            // map slot.
             guard
                 let current = self.stores[id] as? Store<Value>,
                 ObjectIdentifier(current) == ObjectIdentifier(created),
@@ -65,13 +65,6 @@ public final class InstanceManager {
         } catch {
             return nil
         }
-    }
-
-    /// Rebuild an existing instance. Invoked only through `ViewModelBinding.recycle`.
-    @discardableResult
-    func recreate<Value: AnyObject>(_ value: Value, builder: (@MainActor () -> Value)? = nil) throws -> Value {
-        try requireNotResetting()
-        return try store(for: Value.self).recreate(value, builder: builder)
     }
 
     /// Force-dispose the handle that owns `value`, regardless of which binding

@@ -72,22 +72,18 @@ open class ViewModelBinding {
 
     private var instanceAttachedHook: ((any _AnyHandle, ViewModel) -> Void)?
     private var instanceDetachedHook: ((any _AnyHandle, ViewModel) -> Void)?
-    private var instanceRecreatedHook: ((any _AnyHandle, ViewModel, ViewModel) -> Void)?
     private var viewModelUpdateHook: ((ViewModel) -> Void)?
     private let defaultViewModelKey = AnyHashable(ViewModelPrivateKey())
 
     private lazy var instanceController: AutoDisposeInstanceController = {
         AutoDisposeInstanceController(
             binding: self,
-            onRecreate: { [weak self] in self?.handleInstanceChange() },
+            onHandleDisposing: { [weak self] in self?.handleInstanceChange() },
             onInstanceAttached: { [weak self] handle, viewModel in
                 self?.handleInstanceAttached(handle, viewModel: viewModel)
             },
             onInstanceDetached: { [weak self] handle, viewModel in
                 self?.handleInstanceDetached(handle, viewModel: viewModel)
-            },
-            onInstanceRecreated: { [weak self] handle, previous, current in
-                self?.handleInstanceRecreated(handle, previous: previous, current: current)
             }
         )
     }()
@@ -126,21 +122,6 @@ open class ViewModelBinding {
         instanceDetachedHook?(handle, viewModel)
     }
 
-    private func handleInstanceRecreated(
-        _ handle: any _AnyHandle,
-        previous: ViewModel,
-        current: ViewModel
-    ) {
-        if let disposer = watchedViewModels.removeValue(forKey: ObjectIdentifier(previous)) {
-            disposer()
-            addListener(current)
-        }
-        for subscription in subscriptions where subscription.isAttached(to: previous) {
-            subscription.move(to: current)
-        }
-        instanceRecreatedHook?(handle, previous, current)
-    }
-
     /// Override to install default pause providers for a subclass.
     open func makePauseController() -> PauseAwareController {
         PauseAwareController(
@@ -176,7 +157,7 @@ open class ViewModelBinding {
 
     /// Primary resolution API. Resolve or create from a stable spec/factory
     /// without subscribing to ViewModel notifications. Ownership and handle
-    /// recreation/disposal observation are still established.
+    /// disposal observation are still established.
     @discardableResult
     public func read<VM: ViewModel>(_ factory: any ViewModelFactory<VM>) -> VM {
         getViewModel(factory: factory, listen: false)
@@ -210,17 +191,17 @@ open class ViewModelBinding {
     /// Advanced lookup-only API. Fetch every existing instance with a tag and
     /// subscribe to each match. Prefer specs for normal dependency resolution.
     public func watchCachesByTag<VM: ViewModel>(_ tag: AnyHashable) -> [VM] {
-        let vms: [VM] = instanceController.getInstancesByTag(VM.self, tag: tag, observeRecreate: true)
+        let vms: [VM] = instanceController.getInstancesByTag(VM.self, tag: tag)
         for vm in vms { addListener(vm) }
         return vms
     }
 
     /// Advanced lookup-only API. Fetch every existing instance with a tag
     /// without subscribing. Instances are still bound so lifecycle cleanup
-    /// happens on dispose; recreation events are still observed. Prefer specs
+    /// happens on dispose; handle disposal is still observed. Prefer specs
     /// for normal dependency resolution.
     public func readCachesByTag<VM: ViewModel>(_ tag: AnyHashable) -> [VM] {
-        instanceController.getInstancesByTag(VM.self, tag: tag, observeRecreate: true)
+        instanceController.getInstancesByTag(VM.self, tag: tag)
     }
 
     public func listen<VM: ViewModel>(
@@ -257,18 +238,6 @@ open class ViewModelBinding {
             InstanceManager.shared.recycle(viewModel),
             "Cannot recycle \(VM.self): instance not found in registry."
         )
-    }
-
-    /// Replace one managed object while preserving all active owner paths.
-    @discardableResult
-    public func recreate<VM: ViewModel>(
-        _ viewModel: VM,
-        builder: (@MainActor () -> VM)? = nil
-    ) throws -> VM {
-        let owner = viewModel.refHandler.primaryOwner ?? self
-        return try ViewModelBinding.withBuilding(owner) {
-            try InstanceManager.shared.recreate(viewModel, builder: builder)
-        }
     }
 
     // MARK: - Pause provider management
@@ -429,35 +398,25 @@ open class ViewModelBinding {
     func installDependencyHooks(
         attached: @escaping (any _AnyHandle, ViewModel) -> Void,
         detached: @escaping (any _AnyHandle, ViewModel) -> Void,
-        recreated: @escaping (any _AnyHandle, ViewModel, ViewModel) -> Void,
         updated: @escaping (ViewModel) -> Void
     ) {
         instanceAttachedHook = attached
         instanceDetachedHook = detached
-        instanceRecreatedHook = recreated
         viewModelUpdateHook = updated
     }
 }
 
 @MainActor
 private final class BindingSubscription {
-    private var viewModel: ViewModel
-    private let attach: (ViewModel) -> () -> Void
+    private let viewModel: ViewModel
     private var disposer: (() -> Void)?
 
     init(viewModel: ViewModel, attach: @escaping (ViewModel) -> () -> Void) {
         self.viewModel = viewModel
-        self.attach = attach
         disposer = attach(viewModel)
     }
 
     func isAttached(to value: ViewModel) -> Bool { viewModel === value }
-
-    func move(to value: ViewModel) {
-        disposer?()
-        viewModel = value
-        disposer = attach(value)
-    }
 
     func dispose() {
         disposer?()

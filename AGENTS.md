@@ -17,11 +17,11 @@ Sources/AppleViewModel/
 ├── Lifecycle/     ViewModelLifecycle、AutoDisposeController
 ├── Observable/    ObservableValue (+ ObservableStateViewModel)
 └── UI/
-    ├── SwiftUI/   @WatchViewModel / @ReadViewModel / ViewModelBuilder / ObserverBuilder / StateViewModelValueWatcher
+    ├── SwiftUI/   @WatchViewModel / @ReadViewModel / ObserverBuilder / StateViewModelValueWatcher
     └── UIKit/     NSObject+ViewModel（真正实现）+ UIViewController+ViewModel（占位方便 API 发现）
 ```
 
-- `Tests/AppleViewModelTests/`：每个核心机制对应一个测试文件，目前共 67 个用例。
+- `Tests/AppleViewModelTests/`：每个核心机制对应一个测试文件，目前共 64 个用例。
 - `Examples/CounterApp/`：可直接粘贴到 Xcode 新建工程里跑的 demo，不编入 Package。
 
 ## 核心不变式
@@ -30,10 +30,10 @@ Sources/AppleViewModel/
 2. **默认 identity 是类型 + binding 私有 key**。同一 binding 内同一 VM 类型复用；不同 binding 默认隔离。显式 `key` 用于跨 binding 共享，或同一 binding 内区分多个同类型实例。
 3. **`aliveForever = true` 必须配显式 key**。root 与 nested 解析统一在 builder 执行前校验，底层 Store 也必须兜底；引用计数归零时实例仍留在缓存，但显式 `recycle` 与测试用 `InstanceManager.shared.debugReset()` 仍会强制销毁。
 4. **VM-to-VM 依赖属于 parent generation**。每个 parent 对象延迟持有一个稳定 dependency binding；它保活已解析 child、实时传播 root owners，并用 source-aware 路径避免 direct/parent 引用互相误删。构造 stack 只负责 init/onCreate 阶段的首批 root owner 发现。
-5. **嵌套依赖用计算属性解析**。不要用 `lazy var`/stored property 缓存 child；显式 recycle/recreate 后必须能重新解析 replacement。
+5. **嵌套依赖用计算属性解析**。不要用 `lazy var`/stored property 缓存 child；显式 recycle 后必须能通过 getter 重新解析新 generation。
 6. **`@MainActor` 全包覆盖**（除日志外）。对外 API、所有 VM/binding 类型都在主线程；日志 (`viewModelLog`) 和错误上报 (`reportViewModelError`) 是 `nonisolated`，内部读取受锁保护的 `ViewModelGlobalConfig`，任何 actor、后台 `Task`、`@Sendable` 回调里都能安全调用。后台任务仍然通过 `Task.detached` 明确手动切线程。
-7. **稳定 spec 的 `watch/read` 是主入口**。两者都会创建/获取、bind 并观察 handle recreate/dispose；只有 `watch` 监听 VM 自身通知。即使 spec 带 key/tag，也继续传 spec；cached API 只查询其他路径已创建的实例，是高级 escape hatch，不能与主入口并列推荐或替代 spec-based 解析。README、Skill、示例与公开 API 注释都必须保持这个优先级。
-8. **`recycle` 是全局破坏性操作**。它解除全部 direct/parent owner source；`recreate` 才是在保留 owner 与 binding-owned 订阅的前提下替换实例。
+7. **稳定 spec 的 `watch/read` 是主入口**。两者都会创建/获取、bind 并观察 handle disposal；只有 `watch` 监听 VM 自身通知。即使 spec 带 key/tag，也继续传 spec；cached API 只查询其他路径已创建的实例，是高级 escape hatch，不能与主入口并列推荐或替代 spec-based 解析。README、Skill、示例与公开 API 注释都必须保持这个优先级。
+8. **不提供原位替换实例的 `recreate` API**。需要独立新实例时使用显式新 key；若明确接受影响所有 owners，则先全局 `recycle`，再由 resolver getter 通过 `watch/read(spec)` 走正常 cache-miss 路径创建新 handle 与 dependency tree，不迁移旧对象关系。
 
 ## 边界（明确不做的）
 

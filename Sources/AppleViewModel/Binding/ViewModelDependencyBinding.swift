@@ -5,7 +5,7 @@ import Foundation
 final class ViewModelDependencyBinding: ViewModelBinding {
     private struct DependencyEntry {
         let handle: any _AnyHandle
-        var viewModel: ViewModel
+        let viewModel: ViewModel
     }
 
     private weak var parent: ViewModel?
@@ -34,9 +34,6 @@ final class ViewModelDependencyBinding: ViewModelBinding {
             detached: { [weak self] handle, viewModel in
                 self?.handleDetached(handle, viewModel: viewModel)
             },
-            recreated: { [weak self] handle, previous, current in
-                self?.handleRecreated(handle, previous: previous, current: current)
-            },
             updated: { [weak self] viewModel in
                 self?.onDependencyUpdate(viewModel)
             }
@@ -49,7 +46,7 @@ final class ViewModelDependencyBinding: ViewModelBinding {
     }
 
     public override func onUpdate() {
-        // Disposal/recreation is forwarded by the source-aware handle hooks.
+        // Disposal is forwarded by the source-aware handle hooks.
     }
 
     public override func dispose() {
@@ -79,21 +76,6 @@ final class ViewModelDependencyBinding: ViewModelBinding {
     private func handleDetached(_ handle: any _AnyHandle, viewModel: ViewModel) {
         dependencies.removeValue(forKey: ObjectIdentifier(handle))
         notifyDependency(viewModel)
-    }
-
-    private func handleRecreated(
-        _ handle: any _AnyHandle,
-        previous: ViewModel,
-        current: ViewModel
-    ) {
-        dependencies[ObjectIdentifier(handle)] = DependencyEntry(
-            handle: handle,
-            viewModel: current
-        )
-        for owner in propagatedOwners {
-            attachOwner(handle, viewModel: current, owner: owner)
-        }
-        notifyDependency(current)
     }
 
     private func notifyDependency(_ viewModel: ViewModel) {

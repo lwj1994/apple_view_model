@@ -36,7 +36,7 @@ Use this skill when:
 2. Resolve that spec with `watch(spec)` when ViewModel notifications should
    update the owner, or `read(spec)` when lifecycle-bound access should not
    listen to the ViewModel's own notifications. Both APIs create/reuse, bind,
-   and observe handle recreation/disposal.
+   and observe handle disposal, including force-recycle.
 3. Use a cached API only when the task explicitly requires an advanced
    cross-owner query of an instance already created elsewhere. Cached APIs
    cannot create a missing dependency and must not be suggested as normal DI.
@@ -98,12 +98,11 @@ arguments are intended to share.
 | SwiftUI broad rebuild | `@WatchViewModel(spec)` | Binding host follows the view wrapper. |
 | SwiftUI access without broad rebuild | `@ReadViewModel(spec)` | Bound, no VM-wide subscription. |
 | SwiftUI selected fields | `@ReadViewModel` + `StateViewModelValueWatcher` | Selector owns fine-grained observation. |
-| SwiftUI without wrapper | `ViewModelBuilder(spec) { ... }` | Child builder owns the binding. |
 | UIKit / NSObject | computed property using `viewModelBinding.watch/read` | Associated binding follows the host. |
 | Plain Swift / tests | `ViewModelBinding()` | Caller must call `dispose()`. |
 
 Use a computed resolver property for UIKit/NSObject hosts when explicit global
-`recycle` or recreation is possible:
+`recycle` is possible:
 
 ```swift
 @MainActor
@@ -118,7 +117,7 @@ final class OrdersController: UIViewController, ViewModelBindingRefreshable {
 
 ## Primary binding APIs (recommended)
 
-| API | Creates? | Owns on hit? | VM notifications | Handle recreate/dispose |
+| API | Creates? | Owns on hit? | VM notifications | Handle disposal |
 | --- | ---: | ---: | ---: | ---: |
 | `watch(spec)` | Yes | Yes | Yes | Yes |
 | `read(spec)` | Yes | Yes | No | Yes |
@@ -130,7 +129,7 @@ another path's creation order, cache identity, and lifecycle, and cannot create
 a missing dependency. Show them only for an intentional query of existing
 cross-owner state.
 
-| API | Creates? | Owns on hit? | VM notifications | Handle recreate/dispose |
+| API | Creates? | Owns on hit? | VM notifications | Handle disposal |
 | --- | ---: | ---: | ---: | ---: |
 | `watchCached(key:/tag:)` | No | Yes | Yes | Yes |
 | `readCached(key:/tag:)` | No | Yes | No | Yes |
@@ -144,9 +143,9 @@ can be ambiguous and depends on cache creation order; use the batch API when a
 tag may match several instances.
 
 `listen`, `listenState`, and `listenStateSelect` are binding-owned side effects.
-They resolve through `read`, are removed on binding disposal, and migrate to a
-replacement during `recreate`. Never place a `listen` call in a repeatedly
-evaluated resolver property.
+They resolve through `read` and are removed when the target handle or binding is
+disposed. They are never migrated to another object. Never place a `listen` call
+in a repeatedly evaluated resolver property.
 
 ## Response pattern for implementation requests
 
@@ -193,13 +192,15 @@ final class CheckoutViewModel: ViewModel {
 - Routine cleanup is binding-driven; do not call `vm.dispose()` directly.
 - `recycle(vm)` is a destructive global escape hatch. It removes every owner
   path and force-disposes the managed object, including `aliveForever`.
-- `recreate(vm, builder:)` replaces an object while preserving active owner
-  relationships and binding-owned subscriptions.
-- Always re-resolve through a computed property after either operation; a
-  stored reference may point to a disposed generation.
+- There is no in-place replacement capability. Use a new explicit key for an
+  independent instance. If global replacement is intentional, call `recycle`
+  and let getter-based `watch(spec)` / `read(spec)` create a new handle and
+  dependency tree on the next access; do not migrate old relationships.
+- Always re-resolve through a computed property after `recycle`; a stored
+  reference points to the disposed generation.
 - Recursive construction, runtime dependency cycles, and invalid nested
-  `aliveForever` usage fail fast on the main actor. Recreation is checked so a
-  reset-invalidated replacement is disposed rather than installed.
+  `aliveForever` usage fail fast on the main actor. Failed builders roll back
+  the dependency scope they started.
 
 Lifecycle hooks are `onCreate`, `onBind`, `onUnbind`, and `onDispose`. Register
 owned resources with `addDispose` and let the framework invoke cleanup.
@@ -244,7 +245,7 @@ owned resources with `addDispose` and let the framework invoke cleanup.
 7. Registering `listen` inside a computed property.
 8. Pairing selector observation with a broad `watch` subscription.
 9. Calling public APIs away from `@MainActor`.
-10. Recreating specs inside SwiftUI `body`; keep specs module-level so identity
+10. Creating specs inside SwiftUI `body`; keep specs module-level so identity
     intent and test proxies remain stable.
 
 ## Tests and mocks
@@ -295,5 +296,5 @@ Platforms: iOS 16+, macOS 13+, tvOS 16+, watchOS 9+, visionOS 1+;
 Swift 6.0+.
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.4.2")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.5.0")
 ```

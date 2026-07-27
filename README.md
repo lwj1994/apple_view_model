@@ -13,7 +13,7 @@ Core idea: **anything can be a ViewModel** — business state, repositories, net
 - **Managed module composition**: `ViewModelSpec` declares how to build and identify a module. Retrieve instances with `binding.watch(spec)` / `binding.read(spec)`. Inside a VM, expose dependencies through computed properties that resolve from `viewModelBinding`.
 - **Automatic lifecycle**: Every host holds a `ViewModelBinding`. Reference counting drives disposal — when the last host releases its reference, the VM's `onDispose` fires. No manual cleanup.
 - **Default UI integration**:
-  - SwiftUI: `@WatchViewModel` / `@ReadViewModel` / `ViewModelBuilder` / `ObserverBuilder` / `StateViewModelValueWatcher`. `ViewModel` is itself an `ObservableObject`.
+  - SwiftUI: `@WatchViewModel` / `@ReadViewModel` / `ObserverBuilder` / `StateViewModelValueWatcher`. `ViewModel` is itself an `ObservableObject`.
   - UIKit: `NSObject.viewModelBinding` — works on `UIViewController`, `UIView`, or any `NSObject`. Associated-object lifetime auto-disposes the binding.
 - **Platforms**: iOS 16+; macOS 13+; tvOS 16+; watchOS 9+; visionOS 1+. UIKit files are guarded with `#if canImport(UIKit)`.
 - **Swift**: Requires Swift 6.0+, full language mode and strict concurrency. All public API is `@MainActor`.
@@ -30,17 +30,17 @@ Deployment target: **iOS 16+**. Swift 6 language mode with strict concurrency (`
 > knowing cache identity is not a reason to bypass the spec.
 
 - Use a stable, module-level `ViewModelSpec`, then resolve it with `watch(spec)` or `read(spec)`. These are the primary APIs for UI hosts, plain bindings, tests, and ViewModel-to-ViewModel dependencies.
-- `watch` and `read` both create or reuse an instance, establish ownership, and observe handle recreation/disposal. `watch` additionally listens to the ViewModel's own `notifyListeners()`.
+- `watch` and `read` both create or reuse an instance, establish ownership, and observe handle disposal, including force-recycle. `watch` additionally listens to the ViewModel's own `notifyListeners()`.
 - Prefer managed instances over global singletons. A feature, service, repository, coordinator, or domain capability should normally use an unkeyed spec with `aliveForever: false`; the binding graph then owns creation and disposal.
 - Cached APIs are advanced, lookup-only escape hatches. They cannot create a missing instance and should not replace spec-based dependency resolution.
-- Resolve ViewModels through computed properties rather than `lazy var` or stored references. This lets the next access observe an explicit recycle/recreate or an asynchronous lifecycle change.
+- Resolve ViewModels through computed properties rather than `lazy var` or stored references. This lets the next access observe an explicit recycle or an asynchronous lifecycle change.
 
 ## Installation
 
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.4.2")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.5.0")
 ```
 
 Add `"AppleViewModel"` to your target dependencies.
@@ -127,7 +127,8 @@ struct CounterView: View {
 }
 ```
 
-`@ReadViewModel` binds without subscribing (no rebuild on changes). `ViewModelBuilder(spec) { vm in ... }` avoids writing a property wrapper.
+`@ReadViewModel` binds without subscribing (no rebuild on changes). Keep the
+spec and use these property wrappers directly for normal SwiftUI resolution.
 
 #### UIKit
 
@@ -166,7 +167,7 @@ binding.dispose()  // reference count drops → VM auto-disposed
 
 The core value of a DI framework is one ViewModel injecting another. Every managed parent object generation lazily owns a stable dependency binding. It gives unkeyed children a parent-private identity, keeps resolved children alive for at least the parent's lifetime, and mirrors the parent's current root owners to those children in real time.
 
-Expose dependencies through computed properties. Do not retain a nested ViewModel in `lazy var`, a stored property, or an ad-hoc cache: after explicit `recycle`, parent recreation, or an asynchronous lifecycle race, the next property access must be able to resolve the replacement object.
+Expose dependencies through computed properties. Do not retain a nested ViewModel in `lazy var`, a stored property, or an ad-hoc cache: after explicit `recycle` or an asynchronous lifecycle race, the next property access must be able to resolve the current object generation.
 
 ```swift
 // Module A: export a managed capability. It is not global by default.
@@ -193,7 +194,7 @@ Unkeyed identity is the resolved ViewModel type plus the current binding's priva
 
 Normal application code should keep a stable spec and use one of these APIs:
 
-| API | Creates if absent? | Establishes ownership? | VM `notifyListeners()` | Handle recreate/dispose |
+| API | Creates if absent? | Establishes ownership? | VM `notifyListeners()` | Handle disposal |
 |---|---:|---:|---:|---:|
 | `watch(spec)` | Yes | Yes | Yes | Yes |
 | `read(spec)` | Yes | Yes | No | Yes |
@@ -210,7 +211,7 @@ Choose `watch` when ViewModel notifications should update the owner. Choose
 > owner's lifecycle, and cannot create a missing dependency. Use it only for an
 > intentional cross-owner query of an existing cache entry.
 
-| API | Creates if absent? | Establishes ownership? | VM `notifyListeners()` | Handle recreate/dispose |
+| API | Creates if absent? | Establishes ownership? | VM `notifyListeners()` | Handle disposal |
 |---|---:|---:|---:|---:|
 | `watchCached(key:/tag:)` | No | Yes | Yes | Yes |
 | `readCached(key:/tag:)` | No | Yes | No | Yes |
@@ -228,11 +229,12 @@ keyed or tagged spec—use `watch(spec)` / `read(spec)` instead.
 ## Lifecycle controls and ownership
 
 - `recycle(vm)` is a destructive global escape hatch: it removes every direct and parent owner path and disposes the shared object, including an `aliveForever` object. The next resolver-property access creates a fresh instance.
-- `recreate(vm)` replaces the object while preserving active owner paths and moving binding-owned watch/listen subscriptions to the replacement.
 - `aliveForever` requires an explicit key at every resolution site and skips automatic disposal when ownership reaches zero; it does not prevent explicit `recycle` or `InstanceManager.shared.debugReset()`.
 - Direct and parent-propagated paths are source-aware. `onBind` runs for the first source of a visible binding id, and `onUnbind` for the last source.
 
-Construction and dependency graphs are checked. Recursive construction, runtime ownership cycles, and every unkeyed `aliveForever` spec fail fast on the main actor. Failed or reset-invalidated recreation never installs a detached replacement into a dead handle.
+There is no in-place instance replacement API. To obtain an independent instance, use a new explicit key. If replacing the shared cached generation globally is intentional, call `recycle(vm)` and let resolver properties call `watch(spec)` / `read(spec)` again. The cache miss creates a new handle and dependency tree; owner paths, watch/listen subscriptions, and dependency edges are not migrated from the disposed object.
+
+Construction and dependency graphs are checked. Recursive construction, runtime ownership cycles, and every unkeyed `aliveForever` spec fail fast on the main actor. Failed builders roll back the dependency scope they started.
 
 ## Fine-grained observation
 

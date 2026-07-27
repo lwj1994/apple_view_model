@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-27
+
+### Removed
+
+- Remove the public `ViewModelBinding.recreate(_:builder:)` API together with
+  Manager, Store, and `InstanceHandle` in-place replacement logic, plus all
+  `InstanceAction` / `currentAction` bookkeeping.
+- Remove the SwiftUI `ViewModelBuilder` convenience view. Use
+  `@WatchViewModel(spec)` for reactive spec-based resolution.
+
+### Changed
+
+- AutoDispose now observes handle disposal only. Owner paths, ViewModel
+  listeners, binding-owned subscriptions, and dependency edges are no longer
+  migrated between object generations.
+- Obtain a distinct instance with a new explicit key, or globally `recycle` the
+  old generation and let a resolver property call `watch/read(spec)` again.
+
 ## [0.4.2] - 2026-07-27
 
 ### Documentation

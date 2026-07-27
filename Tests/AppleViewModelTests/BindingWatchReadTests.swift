@@ -101,7 +101,7 @@ final class BindingWatchReadTests: XCTestCase {
 
     // MARK: - recycle
 
-    func test_recycle_disposes_current_instance_and_allows_recreation() {
+    func test_recycle_disposes_current_instance_and_allows_fresh_resolution() {
         let spec = ViewModelSpec<CounterViewModel>(key: "recycle") { CounterViewModel() }
         let b = ViewModelBinding()
         let vm1 = b.watch(spec)

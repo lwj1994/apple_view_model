@@ -120,56 +120,6 @@ final class ParentDependencyBindingTests: XCTestCase {
         owner.dispose()
     }
 
-    func test_recreatingParent_startsNewPrivateChildGeneration() throws {
-        let owner = PDCountingBinding()
-        let parent = owner.watch(pdParentSpec)
-        let child = parent.child
-        owner.updates = 0
-
-        let recreated = try owner.recreate(parent)
-
-        XCTAssertTrue(parent.isDisposed)
-        XCTAssertTrue(child.isDisposed)
-        XCTAssertFalse(recreated === parent)
-        XCTAssertFalse(recreated.child === child)
-        XCTAssertEqual(owner.updates, 1)
-        owner.dispose()
-    }
-
-    func test_recreatingChild_movesParentListenSubscription() throws {
-        let owner = PDCountingBinding()
-        let parent = owner.watch(pdParentSpec)
-        let child = parent.child
-        parent.listenToChild()
-
-        let recreated = try owner.recreate(child)
-        recreated.emit()
-
-        XCTAssertTrue(parent.child === recreated)
-        XCTAssertEqual(parent.listenCallbacks, 1)
-        owner.dispose()
-    }
-
-    func test_resetInsideRecreate_disposesDetachedReplacement() {
-        let owner = ViewModelBinding()
-        let original = owner.read(pdSharedChildSpec)
-        var replacement: PDChildViewModel? = nil
-
-        XCTAssertThrowsError(
-            try owner.recreate(original) {
-                InstanceManager.shared.debugReset()
-                let created = PDChildViewModel()
-                replacement = created
-                return created
-            }
-        )
-
-        XCTAssertTrue(original.isDisposed)
-        XCTAssertTrue(replacement?.isDisposed == true)
-        XCTAssertEqual(InstanceManager.shared.debugStoreCount, 0)
-        owner.dispose()
-    }
-
     func test_keyedAliveForeverChildRemainsReachableAfterParentDisposal() {
         let owner = ViewModelBinding()
         let parent = owner.read(pdParentSpec)

@@ -6,7 +6,7 @@ import Foundation
 /// - caches handles by `key`,
 /// - assigns creation indices via `nextIndex` so `findNewlyInstance` can return
 ///   the most recently created instance,
-/// - listens for its handles' dispose actions and evicts them from the cache,
+/// - listens for handle disposal notifications and evicts them from the cache,
 /// - invokes `onStoreEmpty` once the map has been drained so the manager can
 ///   release the bucket entirely.
 @MainActor
@@ -95,8 +95,7 @@ final class Store<Value: AnyObject> {
             return InstanceHandle<Value>(
                 value: instance,
                 arg: arg,
-                index: nextIndex,
-                factory: builder
+                index: nextIndex
             )
         }
         if disposed {
@@ -111,9 +110,8 @@ final class Store<Value: AnyObject> {
         // Watch for dispose so we can evict the handle from the cache.
         // The handle discards its listener list during dispose, so no explicit
         // unsubscribe is needed.
-        _ = created.addListener { [weak self] handle in
+        _ = created.addListener { [weak self] _ in
             guard let self else { return }
-            guard handle.currentAction == .dispose else { return }
             self.handles.removeValue(forKey: realKey)
             if self.handles.isEmpty {
                 self.onStoreEmpty?()
@@ -121,17 +119,6 @@ final class Store<Value: AnyObject> {
         }
 
         return created
-    }
-
-    /// Recreate an existing instance — used by `InstanceManager.recreate`.
-    func recreate(_ target: Value, builder: (@MainActor () -> Value)? = nil) throws -> Value {
-        guard !disposed else {
-            throw ViewModelError("Store<\(Value.self)> has been disposed.")
-        }
-        guard let handle = handles.values.first(where: { $0.value === target }) else {
-            throw ViewModelError("Cannot recreate \(Value.self) instance. Instance not found in store.")
-        }
-        return try handle.recreate(builder: builder)
     }
 
     func tryRecycle(_ target: AnyObject) -> Bool {

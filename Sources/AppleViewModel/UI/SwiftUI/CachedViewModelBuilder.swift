@@ -1,37 +1,8 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
-/// View wrapper that pairs a `ViewModelSpec` with a builder closure — a turnkey
-/// alternative to writing `@WatchViewModel` on your `View` struct.
-///
-/// Equivalent to the Dart `ViewModelBuilder`.
-///
-/// ```swift
-/// ViewModelBuilder(counterSpec) { vm in
-///     Button("\(vm.count)") { vm.increment() }
-/// }
-/// ```
-@MainActor
-public struct ViewModelBuilder<VM: ViewModel, Content: View>: View {
-    @WatchViewModel private var vm: VM
-    private let content: (VM) -> Content
-
-    public init(
-        _ factory: any ViewModelFactory<VM>,
-        @ViewBuilder content: @escaping (VM) -> Content
-    ) {
-        self._vm = WatchViewModel(factory)
-        self.content = content
-    }
-
-    public var body: some View {
-        content(vm)
-    }
-}
-
 /// Advanced cache-only builder that looks up an existing instance by share key
-/// or tag. Prefer `ViewModelBuilder(spec)` or `@WatchViewModel(spec)` for normal
-/// UI dependency resolution.
+/// or tag. Prefer `@WatchViewModel(spec)` for normal UI dependency resolution.
 ///
 /// Equivalent to the Dart `CachedViewModelBuilder`. When no instance is found,
 /// a zero-sized placeholder is rendered and the error is reported via
