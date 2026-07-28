@@ -55,6 +55,14 @@ npx skills add https://github.com/lwj1994/apple_view_model --skill apple-view-mo
 
 Once installed, Claude Code automatically recognizes and uses AppleViewModel API patterns.
 
+### Architecture Example
+
+The bundled skill includes an English, multi-file
+[Instagram architecture example](./skills/apple-view-model/examples/instagram_architecture/README.md).
+It demonstrates API, repository, feature-state, and startup-coordinator
+ViewModels composed through stable specs and computed dependency properties.
+The example is intentionally excluded from the Swift Package target.
+
 ## The three pieces
 
 AppleViewModel's DI model: **Service (ViewModel) + Registration (Spec) + Container (Binding)**.

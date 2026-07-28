@@ -15,6 +15,9 @@ adapting UI integration and error behavior to Swift.
 - Public API and examples: [repository README](../../README.md)
 - Runtime behavior: `Sources/AppleViewModel/`
 - Contract tests: `Tests/AppleViewModelTests/`
+- Architecture example: `examples/instagram_architecture/README.md` — a
+  multi-file Instagram-style app composed from API, repository, user, feed,
+  post-detail, comment, and startup-coordinator ViewModels.
 - Conceptual upstream: Flutter `view_model` README and skill
 
 If this skill conflicts with the repository README or tests, follow the current

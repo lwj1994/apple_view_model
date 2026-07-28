@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- Add an English, skill-local Instagram architecture example showing a
+  multi-root SwiftUI app composed from API, repository, user, feed,
+  post-detail, comment, and startup-coordinator ViewModels.
+
 ## [0.5.0] - 2026-07-27
 
 ### Removed
