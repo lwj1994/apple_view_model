@@ -70,7 +70,7 @@ open class ViewModelBinding {
     /// Set to true when a notification arrives while we are paused. Drained on resume.
     private var hasMissedUpdates: Bool = false
 
-    private var instanceAttachedHook: ((any _AnyHandle, ViewModel) -> Void)?
+    private var instanceAttachedHook: ((any _AnyHandle, ViewModel) throws -> Void)?
     private var instanceDetachedHook: ((any _AnyHandle, ViewModel) -> Void)?
     private var viewModelUpdateHook: ((ViewModel) -> Void)?
     private let defaultViewModelKey = AnyHashable(ViewModelPrivateKey())
@@ -80,7 +80,7 @@ open class ViewModelBinding {
             binding: self,
             onHandleDisposing: { [weak self] in self?.handleInstanceChange() },
             onInstanceAttached: { [weak self] handle, viewModel in
-                self?.handleInstanceAttached(handle, viewModel: viewModel)
+                try self?.handleInstanceAttached(handle, viewModel: viewModel)
             },
             onInstanceDetached: { [weak self] handle, viewModel in
                 self?.handleInstanceDetached(handle, viewModel: viewModel)
@@ -108,8 +108,8 @@ open class ViewModelBinding {
         if markViewModelBindingUpdated(self) { onUpdate() }
     }
 
-    private func handleInstanceAttached(_ handle: any _AnyHandle, viewModel: ViewModel) {
-        instanceAttachedHook?(handle, viewModel)
+    private func handleInstanceAttached(_ handle: any _AnyHandle, viewModel: ViewModel) throws {
+        try instanceAttachedHook?(handle, viewModel)
     }
 
     private func handleInstanceDetached(_ handle: any _AnyHandle, viewModel: ViewModel) {
@@ -152,7 +152,18 @@ open class ViewModelBinding {
     /// establish ownership, and subscribe to ViewModel notifications.
     @discardableResult
     public func watch<VM: ViewModel>(_ factory: any ViewModelFactory<VM>) -> VM {
-        getViewModel(factory: factory, listen: true)
+        failFastResolution { try watchThrowing(factory) }
+    }
+
+    /// Recoverable counterpart of `watch(_:)`.
+    ///
+    /// Builder failures, reset conflicts, and dependency-cycle validation are
+    /// surfaced to the caller without terminating the process.
+    @discardableResult
+    public func watchThrowing<VM: ViewModel>(
+        _ factory: any ViewModelFactory<VM>
+    ) throws -> VM {
+        try getViewModel(factory: factory, listen: true)
     }
 
     /// Primary resolution API. Resolve or create from a stable spec/factory
@@ -160,38 +171,96 @@ open class ViewModelBinding {
     /// disposal observation are still established.
     @discardableResult
     public func read<VM: ViewModel>(_ factory: any ViewModelFactory<VM>) -> VM {
-        getViewModel(factory: factory, listen: false)
+        failFastResolution { try readThrowing(factory) }
+    }
+
+    /// Recoverable counterpart of `read(_:)`.
+    @discardableResult
+    public func readThrowing<VM: ViewModel>(
+        _ factory: any ViewModelFactory<VM>
+    ) throws -> VM {
+        try getViewModel(factory: factory, listen: false)
     }
 
     /// Advanced lookup-only API. Find an already-created ViewModel by key or tag
     /// and subscribe. Throws on miss and never creates an instance. Prefer
     /// `watch(_:)` with a stable spec for normal dependency resolution.
     public func watchCached<VM: ViewModel>(key: AnyHashable? = nil, tag: AnyHashable? = nil) throws -> VM {
-        try requireExistingViewModel(arg: InstanceArg(key: key, tag: tag), listen: true)
+        try getViewModel(
+            arg: InstanceArg(key: key, tag: tag),
+            listen: true
+        )
     }
 
     /// Advanced lookup-only API. Like `watchCached` but does not subscribe.
     /// Prefer `read(_:)` with a stable spec for normal dependency resolution.
     public func readCached<VM: ViewModel>(key: AnyHashable? = nil, tag: AnyHashable? = nil) throws -> VM {
-        try requireExistingViewModel(arg: InstanceArg(key: key, tag: tag), listen: false)
+        try getViewModel(
+            arg: InstanceArg(key: key, tag: tag),
+            listen: false
+        )
     }
 
     /// Advanced lookup-only API that returns `nil` on a cache miss.
     /// Prefer `watch(_:)` with a stable spec for normal dependency resolution.
-    public func maybeWatchCached<VM: ViewModel>(key: AnyHashable? = nil, tag: AnyHashable? = nil) -> VM? {
-        try? watchCached(key: key, tag: tag)
+    public func maybeWatchCached<VM: ViewModel>(
+        key: AnyHashable? = nil,
+        tag: AnyHashable? = nil
+    ) -> VM? {
+        try? maybeWatchCachedThrowing(key: key, tag: tag)
+    }
+
+    /// Recoverable counterpart of `maybeWatchCached` that preserves unexpected
+    /// non-ViewModel errors. The source-compatible non-throwing API remains the
+    /// convenient lookup form used by existing callers.
+    public func maybeWatchCachedThrowing<VM: ViewModel>(
+        key: AnyHashable? = nil,
+        tag: AnyHashable? = nil
+    ) throws -> VM? {
+        do {
+            return try watchCached(key: key, tag: tag)
+        } catch is ViewModelError {
+            return nil
+        } catch {
+            throw error
+        }
     }
 
     /// Advanced lookup-only API that returns `nil` on a cache miss.
     /// Prefer `read(_:)` with a stable spec for normal dependency resolution.
-    public func maybeReadCached<VM: ViewModel>(key: AnyHashable? = nil, tag: AnyHashable? = nil) -> VM? {
-        try? readCached(key: key, tag: tag)
+    public func maybeReadCached<VM: ViewModel>(
+        key: AnyHashable? = nil,
+        tag: AnyHashable? = nil
+    ) -> VM? {
+        try? maybeReadCachedThrowing(key: key, tag: tag)
+    }
+
+    /// Recoverable counterpart of `maybeReadCached` that preserves unexpected
+    /// non-ViewModel errors.
+    public func maybeReadCachedThrowing<VM: ViewModel>(
+        key: AnyHashable? = nil,
+        tag: AnyHashable? = nil
+    ) throws -> VM? {
+        do {
+            return try readCached(key: key, tag: tag)
+        } catch is ViewModelError {
+            return nil
+        } catch {
+            throw error
+        }
     }
 
     /// Advanced lookup-only API. Fetch every existing instance with a tag and
     /// subscribe to each match. Prefer specs for normal dependency resolution.
     public func watchCachesByTag<VM: ViewModel>(_ tag: AnyHashable) -> [VM] {
-        let vms: [VM] = instanceController.getInstancesByTag(VM.self, tag: tag)
+        failFastResolution { try watchCachesByTagThrowing(tag) }
+    }
+
+    /// Recoverable counterpart of `watchCachesByTag(_:)`.
+    public func watchCachesByTagThrowing<VM: ViewModel>(
+        _ tag: AnyHashable
+    ) throws -> [VM] {
+        let vms: [VM] = try instanceController.getInstancesByTag(VM.self, tag: tag)
         for vm in vms { addListener(vm) }
         return vms
     }
@@ -201,12 +270,19 @@ open class ViewModelBinding {
     /// happens on dispose; handle disposal is still observed. Prefer specs
     /// for normal dependency resolution.
     public func readCachesByTag<VM: ViewModel>(_ tag: AnyHashable) -> [VM] {
-        instanceController.getInstancesByTag(VM.self, tag: tag)
+        failFastResolution { try readCachesByTagThrowing(tag) }
+    }
+
+    /// Recoverable counterpart of `readCachesByTag(_:)`.
+    public func readCachesByTagThrowing<VM: ViewModel>(
+        _ tag: AnyHashable
+    ) throws -> [VM] {
+        try instanceController.getInstancesByTag(VM.self, tag: tag)
     }
 
     public func listen<VM: ViewModel>(
         _ factory: any ViewModelFactory<VM>,
-        onChanged: @escaping () -> Void
+        onChanged: @escaping () throws -> Void
     ) {
         let vm = read(factory)
         addSubscription(vm) { value in value.listen(onChanged: onChanged) }
@@ -214,7 +290,7 @@ open class ViewModelBinding {
 
     public func listenState<VM, S>(
         _ factory: any ViewModelFactory<VM>,
-        onChanged: @escaping (S?, S) -> Void
+        onChanged: @escaping (S?, S) throws -> Void
     ) where VM: StateViewModel<S> {
         let vm = read(factory)
         addSubscription(vm) { value in value.listenState(onChanged: onChanged) }
@@ -223,11 +299,16 @@ open class ViewModelBinding {
     public func listenStateSelect<VM, S, R: Equatable>(
         _ factory: any ViewModelFactory<VM>,
         selector: @escaping (S) -> R,
-        onChanged: @escaping (R?, R) -> Void
+        equals: ((R, R) -> Bool)? = nil,
+        onChanged: @escaping (R?, R) throws -> Void
     ) where VM: StateViewModel<S> {
         let vm = read(factory)
         addSubscription(vm) { value in
-            value.listenStateSelect(selector: selector, onChanged: onChanged)
+            value.listenStateSelect(
+                selector: selector,
+                equals: equals,
+                onChanged: onChanged
+            )
         }
     }
 
@@ -274,28 +355,29 @@ open class ViewModelBinding {
         factory: (any ViewModelFactory<VM>)? = nil,
         arg: InstanceArg = InstanceArg(),
         listen: Bool
-    ) -> VM {
-        precondition(!isDisposed, "Cannot get \(VM.self): binding is disposed.")
+    ) throws -> VM {
+        guard !isDisposed else {
+            throw ViewModelError("Cannot get \(VM.self): binding is disposed.")
+        }
 
         if let key = arg.key {
             do {
                 return try requireExistingViewModel(arg: InstanceArg(key: key), listen: listen)
-            } catch {
+            } catch let error as ViewModelError {
                 if factory == nil, arg.tag == nil {
-                    preconditionFailure("\(VM.self) instance not found for key=\(key)")
+                    throw error
                 }
             }
         }
 
         if let factory {
-            return createViewModel(factory: factory, listen: listen)
+            return try createViewModel(factory: factory, listen: listen)
         }
 
-        do {
-            return try requireExistingViewModel(arg: InstanceArg(tag: arg.tag), listen: listen)
-        } catch {
-            preconditionFailure("\(VM.self) instance not found for tag=\(String(describing: arg.tag))")
-        }
+        return try requireExistingViewModel(
+            arg: InstanceArg(tag: arg.tag),
+            listen: listen
+        )
     }
 
     /// Throws when no ViewModel matches the supplied lookup criteria.
@@ -303,7 +385,9 @@ open class ViewModelBinding {
         arg: InstanceArg,
         listen: Bool
     ) throws -> VM {
-        precondition(!isDisposed, "Cannot get \(VM.self): binding is disposed.")
+        guard !isDisposed else {
+            throw ViewModelError("Cannot get \(VM.self): binding is disposed.")
+        }
         let vm: VM = try instanceController.getInstance(
             VM.self,
             factory: InstanceFactory<VM>(arg: arg)
@@ -324,8 +408,10 @@ open class ViewModelBinding {
     private func createViewModel<VM: ViewModel>(
         factory: any ViewModelFactory<VM>,
         listen: Bool
-    ) -> VM {
-        precondition(!isDisposed, "Cannot create \(VM.self): binding is disposed.")
+    ) throws -> VM {
+        guard !isDisposed else {
+            throw ViewModelError("Cannot create \(VM.self): binding is disposed.")
+        }
         let configuredKey = factory.key()
         let tag = factory.tag()
         let aliveForever = factory.aliveForever()
@@ -333,22 +419,17 @@ open class ViewModelBinding {
             configuredKey: configuredKey,
             aliveForever: aliveForever
         ) {
-            preconditionFailure(validationError)
+            throw ViewModelError(validationError)
         }
         let key = configuredKey ?? defaultViewModelKey
 
         let instanceFactory = InstanceFactory<VM>(
-            builder: { factory.build() },
+            builder: { try factory.buildThrowing() },
             arg: InstanceArg(key: key, tag: tag, aliveForever: aliveForever)
         )
 
-        let vm: VM
-        do {
-            vm = try ViewModelBinding.withBuilding(self) {
-                try instanceController.getInstance(VM.self, factory: instanceFactory)
-            }
-        } catch {
-            preconditionFailure("ViewModel create failed: \(error)")
+        let vm = try ViewModelBinding.withBuilding(self) {
+            try instanceController.getInstance(VM.self, factory: instanceFactory)
         }
 
         if listen {
@@ -396,13 +477,23 @@ open class ViewModelBinding {
     }
 
     func installDependencyHooks(
-        attached: @escaping (any _AnyHandle, ViewModel) -> Void,
+        attached: @escaping (any _AnyHandle, ViewModel) throws -> Void,
         detached: @escaping (any _AnyHandle, ViewModel) -> Void,
         updated: @escaping (ViewModel) -> Void
     ) {
         instanceAttachedHook = attached
         instanceDetachedHook = detached
         viewModelUpdateHook = updated
+    }
+
+    private func failFastResolution<Result>(
+        _ operation: () throws -> Result
+    ) -> Result {
+        do {
+            return try operation()
+        } catch {
+            preconditionFailure("ViewModel resolution failed: \(error)")
+        }
     }
 }
 

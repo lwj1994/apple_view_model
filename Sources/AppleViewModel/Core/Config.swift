@@ -17,7 +17,8 @@ public struct ViewModelConfig: Sendable {
     ///
     /// If provided, `StateViewModel.setState` uses this closure instead of the
     /// default `===` (for reference types) / "always differ" (for value types).
-    /// Selector listeners use their `Equatable` selected value instead.
+    /// Selector listeners use a local comparator first, then this policy, then
+    /// their selected value's `Equatable` implementation.
     ///
     /// Resolution order: instance-level `equals` → this global policy → default.
     public let equals: (@Sendable (Any?, Any?) -> Bool)?
@@ -26,12 +27,14 @@ public struct ViewModelConfig: Sendable {
     ///
     /// Called for any exception raised inside listener, lifecycle, dispose, or
     /// pause/resume callbacks. When unset, the framework falls back to `os.Logger`.
-    public let onError: (@Sendable (Error, ErrorType) -> Void)?
+    /// If the handler itself throws, the framework logs both the handler failure
+    /// and the original error without interrupting the remaining callbacks.
+    public let onError: (@Sendable (Error, ErrorType) throws -> Void)?
 
     public init(
         isLoggingEnabled: Bool = false,
         equals: (@Sendable (Any?, Any?) -> Bool)? = nil,
-        onError: (@Sendable (Error, ErrorType) -> Void)? = nil
+        onError: (@Sendable (Error, ErrorType) throws -> Void)? = nil
     ) {
         self.isLoggingEnabled = isLoggingEnabled
         self.equals = equals

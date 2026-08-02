@@ -7,7 +7,7 @@ import AppleViewModel
 /// 1. Create a new iOS App project in Xcode (minimum iOS 16).
 /// 2. `File → Add Package Dependencies → Add Local...`, pick `apple_view_model`.
 /// 3. Replace the auto-generated `App` struct with this file and copy in
-///    `CounterView`, `CounterViewModel`, `ThemeToggle`, and `darkModeValue`.
+///    `CounterView` and `CounterViewModel`.
 /// 4. Run on a simulator or device.
 @main
 struct CounterApp: App {
@@ -27,11 +27,7 @@ struct CounterApp: App {
     var body: some Scene {
         WindowGroup {
             NavigationStack {
-                VStack(spacing: 24) {
-                    CounterView()
-                    Divider()
-                    ThemeToggle()
-                }
+                CounterView()
                 .navigationTitle("AppleViewModel demo")
             }
         }

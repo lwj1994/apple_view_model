@@ -4,8 +4,8 @@ import Foundation
 /// `InstanceManager`.
 ///
 /// Every concrete ViewModel class gets a dedicated `Store` keyed by
-/// `ObjectIdentifier(T.self)`. `ViewModelBinding`, `ViewModel.readCached`, and
-/// `ObservableValue` all go through this singleton to look up instances.
+/// `ObjectIdentifier(T.self)`. `ViewModelBinding` and
+/// `ViewModel.readCached` go through this singleton to look up instances.
 ///
 /// The manager is `@MainActor` so state mutations are race-free without a lock.
 @MainActor
@@ -88,6 +88,16 @@ public final class InstanceManager {
         _ type: Value.Type,
         factory: InstanceFactory<Value>? = nil
     ) throws -> InstanceHandle<Value> {
+        try resolveHandle(type, factory: factory).handle
+    }
+
+    /// Resolve a handle and report whether this call created its generation.
+    /// Attachment rollback uses the provenance to force-dispose only a newly
+    /// created retained value, never an older `aliveForever` cache hit.
+    func resolveHandle<Value: AnyObject>(
+        _ type: Value.Type,
+        factory: InstanceFactory<Value>? = nil
+    ) throws -> (handle: InstanceHandle<Value>, wasCreated: Bool) {
         try requireNotResetting()
         if factory == nil || factory!.isEmpty {
             let bindingId = factory?.arg.bindingId
@@ -107,16 +117,19 @@ public final class InstanceManager {
                         aliveForever: found.arg.aliveForever
                     )
                 )
-                return try store.getHandle(factory: extendFactory)
+                return try store.resolveHandle(factory: extendFactory)
             }
-            return found
+            return (found, false)
         }
-        return try store(for: type).getHandle(factory: factory!)
+        return try store(for: type).resolveHandle(factory: factory!)
     }
 
     /// All handles that currently carry `tag` for the requested type.
-    func getHandles<Value: AnyObject>(byTag tag: AnyHashable, type: Value.Type) -> [InstanceHandle<Value>] {
-        if isResetting { return [] }
+    func getHandles<Value: AnyObject>(
+        byTag tag: AnyHashable,
+        type: Value.Type
+    ) throws -> [InstanceHandle<Value>] {
+        try requireNotResetting()
         return store(for: type).instances(byTag: tag)
     }
 

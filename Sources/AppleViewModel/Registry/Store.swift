@@ -54,6 +54,15 @@ final class Store<Value: AnyObject> {
     ///    can remove it from the cache on dispose.
     @discardableResult
     func getHandle(factory: InstanceFactory<Value>) throws -> InstanceHandle<Value> {
+        try resolveHandle(factory: factory).handle
+    }
+
+    /// Same resolution as `getHandle`, with creation provenance used to make
+    /// failed attachment rollback safe for newly-created `aliveForever`
+    /// generations without recycling an older retained cache hit.
+    func resolveHandle(
+        factory: InstanceFactory<Value>
+    ) throws -> (handle: InstanceHandle<Value>, wasCreated: Bool) {
         guard !disposed else {
             throw ViewModelError("Store<\(Value.self)> has been disposed.")
         }
@@ -70,7 +79,7 @@ final class Store<Value: AnyObject> {
             // A visible owner id can reach this handle directly and through a
             // parent. bind() records the direct source independently.
             cached.bind(bindingId)
-            return cached
+            return (cached, false)
         }
 
         guard let builder = factory.builder else {
@@ -82,7 +91,7 @@ final class Store<Value: AnyObject> {
             key: realKey,
             isImplicit: realKey.base is ViewModelPrivateKey
         ) {
-            let instance = builder()
+            let instance = try builder()
             if disposed {
                 disposeUntrackedInstance(instance, arg: arg)
                 throw ViewModelError(
@@ -118,7 +127,7 @@ final class Store<Value: AnyObject> {
             }
         }
 
-        return created
+        return (created, true)
     }
 
     func tryRecycle(_ target: AnyObject) -> Bool {

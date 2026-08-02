@@ -8,11 +8,14 @@ public final class ViewModelBindingHandler {
         var sources: Set<ObjectIdentifier>
     }
 
+    private struct OwnerListenerEntry {
+        let id: UUID
+        let callback: ([String], String?, String?) throws -> Void
+    }
+
     private var dependencyBindings: [ViewModelBinding] = []
     private var refSources: [ObjectIdentifier: OwnerEntry] = [:]
-    private var ownerChangeListeners: [
-        UUID: ([String], String?, String?) -> Void
-    ] = [:]
+    private var ownerChangeListeners: [OwnerListenerEntry] = []
 
     public init() {}
 
@@ -42,11 +45,13 @@ public final class ViewModelBindingHandler {
     @_spi(Internal)
     @discardableResult
     public func addOwnerChangeListener(
-        _ listener: @escaping ([String], String?, String?) -> Void
+        _ listener: @escaping ([String], String?, String?) throws -> Void
     ) -> () -> Void {
         let id = UUID()
-        ownerChangeListeners[id] = listener
-        return { [weak self] in self?.ownerChangeListeners.removeValue(forKey: id) }
+        ownerChangeListeners.append(OwnerListenerEntry(id: id, callback: listener))
+        return { [weak self] in
+            self?.ownerChangeListeners.removeAll { $0.id == id }
+        }
     }
 
     @_spi(Internal)
@@ -103,8 +108,20 @@ public final class ViewModelBindingHandler {
         guard !ownerChangeListeners.isEmpty else { return }
         let ownerIds = dependencyBindings.map(\.id)
         let currentPrimaryOwner = primaryOwner?.id
-        for listener in Array(ownerChangeListeners.values) {
-            listener(ownerIds, previousPrimaryOwner, currentPrimaryOwner)
+        let snapshot = ownerChangeListeners
+        for entry in snapshot {
+            guard ownerChangeListeners.contains(where: { $0.id == entry.id }) else {
+                continue
+            }
+            do {
+                try entry.callback(ownerIds, previousPrimaryOwner, currentPrimaryOwner)
+            } catch {
+                reportViewModelError(
+                    error,
+                    type: .listener,
+                    context: "ViewModel owner diagnostics listener error"
+                )
+            }
         }
     }
 }

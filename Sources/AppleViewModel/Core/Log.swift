@@ -47,7 +47,15 @@ public func reportViewModelError(
     context: String
 ) {
     if let handler = ViewModel.config.onError {
-        handler(error, type)
+        do {
+            try handler(error, type)
+        } catch let handlerError {
+            let handlerDescription = String(describing: handlerError)
+            let originalDescription = String(describing: error)
+            appleViewModelLogger.error(
+                "[\(String(describing: type), privacy: .public)] onError callback threw: \(handlerDescription, privacy: .public). Original \(context, privacy: .public): \(originalDescription, privacy: .public)"
+            )
+        }
         return
     }
     appleViewModelLogger.error("[\(String(describing: type), privacy: .public)] \(context, privacy: .public): \(error.localizedDescription, privacy: .public)")

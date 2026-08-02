@@ -6,7 +6,7 @@ import Foundation
 final class AutoDisposeInstanceController {
     private unowned let binding: ViewModelBinding
     private let onHandleDisposing: () -> Void
-    private let onInstanceAttached: ((any _AnyHandle, ViewModel) -> Void)?
+    private let onInstanceAttached: ((any _AnyHandle, ViewModel) throws -> Void)?
     private let onInstanceDetached: ((any _AnyHandle, ViewModel) -> Void)?
 
     private var trackedHandles: [ObjectIdentifier: any _AnyHandle] = [:]
@@ -16,7 +16,7 @@ final class AutoDisposeInstanceController {
     init(
         binding: ViewModelBinding,
         onHandleDisposing: @escaping () -> Void,
-        onInstanceAttached: ((any _AnyHandle, ViewModel) -> Void)? = nil,
+        onInstanceAttached: ((any _AnyHandle, ViewModel) throws -> Void)? = nil,
         onInstanceDetached: ((any _AnyHandle, ViewModel) -> Void)? = nil
     ) {
         self.binding = binding
@@ -35,26 +35,55 @@ final class AutoDisposeInstanceController {
         let factoryWithBinding = factory.copy(
             arg: factory.arg.copy(bindingId: .some(binding.id))
         )
-        let handle = try InstanceManager.shared.getHandle(type, factory: factoryWithBinding)
-        if let vm = handle.value as? ViewModel {
-            vm.refHandler.addRef(binding)
+        let resolution = try InstanceManager.shared.resolveHandle(
+            type,
+            factory: factoryWithBinding
+        )
+        let handle = resolution.handle
+        let viewModel = handle.value as? ViewModel
+        if let viewModel {
+            viewModel.refHandler.addRef(binding)
         }
-        attachHandleListener(handle)
+        do {
+            try attachHandleListener(handle)
+        } catch {
+            rollbackCurrentAttachment(
+                handle,
+                viewModel: viewModel,
+                forceNewGeneration: resolution.wasCreated
+            )
+            throw error
+        }
         return try handle.requireInstance()
     }
 
     func getInstancesByTag<Value: AnyObject>(
         _ type: Value.Type,
         tag: AnyHashable
-    ) -> [Value] {
-        let handles = InstanceManager.shared.getHandles(byTag: tag, type: type)
+    ) throws -> [Value] {
+        guard !disposed else {
+            throw ViewModelError(
+                "AutoDisposeInstanceController.getInstancesByTag() called after dispose."
+            )
+        }
+        let handles = try InstanceManager.shared.getHandles(byTag: tag, type: type)
         var result: [Value] = []
         for handle in handles {
             handle.bind(binding.id)
-            if let vm = handle.value as? ViewModel {
-                vm.refHandler.addRef(binding)
+            let viewModel = handle.value as? ViewModel
+            if let viewModel {
+                viewModel.refHandler.addRef(binding)
             }
-            attachHandleListener(handle)
+            do {
+                try attachHandleListener(handle)
+            } catch {
+                rollbackCurrentAttachment(
+                    handle,
+                    viewModel: viewModel,
+                    forceNewGeneration: false
+                )
+                throw error
+            }
             if let value = handle.value { result.append(value) }
         }
         return result
@@ -91,13 +120,34 @@ final class AutoDisposeInstanceController {
         listenerDisposers.removeAll()
     }
 
-    private func attachHandleListener<Value: AnyObject>(_ handle: InstanceHandle<Value>) {
-        guard !disposed else { return }
+    private func attachHandleListener<Value: AnyObject>(
+        _ handle: InstanceHandle<Value>
+    ) throws {
+        guard !disposed else {
+            throw ViewModelError(
+                "Cannot attach \(Value.self): binding was disposed during resolution."
+            )
+        }
+        guard !handle.isDisposed else {
+            throw ViewModelError(
+                "Cannot attach \(Value.self): instance was disposed during resolution."
+            )
+        }
         let key = ObjectIdentifier(handle)
         guard listenerDisposers[key] == nil else { return }
 
         if let vm = handle.value as? ViewModel {
-            onInstanceAttached?(handle, vm)
+            try onInstanceAttached?(handle, vm)
+        }
+        guard !disposed else {
+            throw ViewModelError(
+                "Cannot attach \(Value.self): binding was disposed during resolution."
+            )
+        }
+        guard !handle.isDisposed else {
+            throw ViewModelError(
+                "Cannot attach \(Value.self): instance was disposed during resolution."
+            )
         }
         trackedHandles[key] = handle
         listenerDisposers[key] = handle.addListener { [weak self] current in
@@ -106,6 +156,26 @@ final class AutoDisposeInstanceController {
             self.listenerDisposers.removeValue(forKey: key)?()
             self.trackedHandles.removeValue(forKey: key)
             if !InstanceManager.shared.isResetting { self.onHandleDisposing() }
+        }
+    }
+
+    /// Undo only the direct ownership path introduced by the current resolve.
+    /// This covers dependency-cycle rejection and lifecycle reentrancy where a
+    /// ViewModel disposes its resolving binding from `onCreate` / `onBind`
+    /// before the controller has committed the handle to `trackedHandles`.
+    private func rollbackCurrentAttachment<Value: AnyObject>(
+        _ handle: InstanceHandle<Value>,
+        viewModel: ViewModel?,
+        forceNewGeneration: Bool
+    ) {
+        if let viewModel, !viewModel.isDisposed {
+            viewModel.refHandler.removeRef(binding)
+        }
+        if !handle.isDisposed {
+            handle.unbind(binding.id)
+        }
+        if forceNewGeneration, !handle.isDisposed {
+            handle.unbindAll(force: true)
         }
     }
 

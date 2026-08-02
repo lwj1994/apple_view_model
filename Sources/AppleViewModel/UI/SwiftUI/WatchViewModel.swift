@@ -23,16 +23,21 @@ import Combine
 @MainActor
 @propertyWrapper
 public struct WatchViewModel<VM: ViewModel>: DynamicProperty {
+    private let factory: any ViewModelFactory<VM>
     @StateObject private var host: ViewModelHost<VM>
 
     public init(_ factory: any ViewModelFactory<VM>) {
+        self.factory = factory
         _host = StateObject(wrappedValue: ViewModelHost(factory: factory, listen: true))
     }
 
-    public var wrappedValue: VM { host.viewModel }
+    public var wrappedValue: VM { host.update(factory: factory) }
 
     /// Escape hatch for callers that want to attach extra `listen` / `listenState`
     /// hooks to the binding, or install a custom `PauseProvider`.
-    public var projectedValue: HostedViewModelBinding { host.binding }
+    public var projectedValue: HostedViewModelBinding {
+        _ = host.update(factory: factory)
+        return host.binding
+    }
 }
 #endif

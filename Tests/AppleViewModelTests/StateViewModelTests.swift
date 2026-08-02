@@ -9,7 +9,11 @@ final class StateViewModelTests: XCTestCase {
     }
 
     func test_setState_fires_stateListeners_with_previous_and_current() {
-        let vm = CounterStateViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterStateViewModel> { CounterStateViewModel() }
+        )
         var received: [(CounterState?, CounterState)] = []
         _ = vm.listenState { prev, curr in
             received.append((prev, curr))
@@ -29,7 +33,11 @@ final class StateViewModelTests: XCTestCase {
     }
 
     func test_setState_same_state_is_skipped_when_equals_returns_true() {
-        let vm = CounterStateViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterStateViewModel> { CounterStateViewModel() }
+        )
         var fired = 0
         _ = vm.listenState { _, _ in fired += 1 }
 
@@ -39,7 +47,11 @@ final class StateViewModelTests: XCTestCase {
     }
 
     func test_listenStateSelect_only_fires_when_selected_output_differs() {
-        let vm = CounterStateViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterStateViewModel> { CounterStateViewModel() }
+        )
         var labelChanges = 0
         _ = vm.listenStateSelect(selector: { $0.label }) { _, _ in
             labelChanges += 1
@@ -53,7 +65,11 @@ final class StateViewModelTests: XCTestCase {
     }
 
     func test_previousState_tracks_last_value() {
-        let vm = CounterStateViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterStateViewModel> { CounterStateViewModel() }
+        )
         XCTAssertNil(vm.previousState)
         vm.inc()
         XCTAssertEqual(vm.previousState?.count, 0)
@@ -64,7 +80,11 @@ final class StateViewModelTests: XCTestCase {
     }
 
     func test_notifyListeners_also_fires_general_listeners_after_state_change() {
-        let vm = CounterStateViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterStateViewModel> { CounterStateViewModel() }
+        )
         var generalFired = 0
         var stateFired = 0
         _ = vm.listen { generalFired += 1 }
@@ -86,7 +106,11 @@ final class StateViewModelTests: XCTestCase {
                 )
             }
         }
-        let vm = LabelOnlyStateVM()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<LabelOnlyStateVM> { LabelOnlyStateVM() }
+        )
         var fired = 0
         _ = vm.listenState { _, _ in fired += 1 }
 

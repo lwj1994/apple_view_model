@@ -40,7 +40,10 @@ Use this skill when:
    update the owner, or `read(spec)` when lifecycle-bound access should not
    listen to the ViewModel's own notifications. Both APIs create/reuse, bind,
    and observe handle disposal, including force-recycle.
-3. Use a cached API only when the task explicitly requires an advanced
+3. Use `watchThrowing` / `readThrowing` with a spec `throwingBuilder` when the
+   caller must recover from builder, cycle-validation, or reset-conflict errors.
+   Ordinary `watch` / `read` intentionally remain fail-fast.
+4. Use a cached API only when the task explicitly requires an advanced
    cross-owner query of an instance already created elsewhere. Cached APIs
    cannot create a missing dependency and must not be suggested as normal DI.
 
@@ -73,7 +76,7 @@ A key or tag on a spec does not change this order. Pass the keyed/tagged spec to
 - `tag` is only a grouping/lookup label.
 - A key does not retain an instance.
 - `aliveForever` only skips automatic disposal when ownership reaches zero.
-  Explicit `recycle` and `InstanceManager.shared.debugReset()` still dispose it.
+  Explicit `recycle` and `ViewModel.reset()` still dispose it.
 - Every `aliveForever` spec requires an explicit key, whether it is resolved by
   a root binding or another ViewModel. Swift fails fast before calling the
   builder when the key is missing or computes to `nil`; the Store enforces the
@@ -100,7 +103,7 @@ arguments are intended to share.
 | --- | --- | --- |
 | SwiftUI broad rebuild | `@WatchViewModel(spec)` | Binding host follows the view wrapper. |
 | SwiftUI access without broad rebuild | `@ReadViewModel(spec)` | Bound, no VM-wide subscription. |
-| SwiftUI selected fields | `@ReadViewModel` + `StateViewModelValueWatcher` | Selector owns fine-grained observation. |
+| SwiftUI selected fields | `@ReadViewModel` + `StateViewModelSelector` | Strongly typed selector owns fine-grained observation. |
 | UIKit / NSObject | computed property using `viewModelBinding.watch/read` | Associated binding follows the host. |
 | Plain Swift / tests | `ViewModelBinding()` | Caller must call `dispose()`. |
 
@@ -125,6 +128,11 @@ final class OrdersController: UIViewController, ViewModelBindingRefreshable {
 | `watch(spec)` | Yes | Yes | Yes | Yes |
 | `read(spec)` | Yes | Yes | No | Yes |
 
+`watchThrowing(spec)` / `readThrowing(spec)` preserve the same ownership and
+notification semantics while surfacing recoverable factory/cycle/reset errors.
+Declare a fallible factory with `ViewModelSpec(throwingBuilder:)`. Do not replace
+ordinary resolution with the throwing form when no recovery path is needed.
+
 ## Cached lookup APIs (advanced)
 
 Do not replace a stable spec with cache lookup. These APIs couple the caller to
@@ -143,7 +151,10 @@ cross-owner state.
 
 Non-`maybe` single-result cached lookups throw on a miss. A single lookup by tag
 can be ambiguous and depends on cache creation order; use the batch API when a
-tag may match several instances.
+tag may match several instances. The source-compatible non-throwing
+`maybeWatchCached` / `maybeReadCached` APIs return `nil` on lookup failure. Use
+their `*Throwing` counterparts when unexpected non-`ViewModelError` failures
+must be preserved.
 
 `listen`, `listenState`, and `listenStateSelect` are binding-owned side effects.
 They resolve through `read` and are removed when the target handle or binding is
@@ -202,8 +213,12 @@ final class CheckoutViewModel: ViewModel {
 - Always re-resolve through a computed property after `recycle`; a stored
   reference points to the disposed generation.
 - Recursive construction, runtime dependency cycles, and invalid nested
-  `aliveForever` usage fail fast on the main actor. Failed builders roll back
-  the dependency scope they started.
+  `aliveForever` usage fail fast through `watch/read`, or throw through
+  `watchThrowing/readThrowing`. Failed builders roll back the dependency scope
+  they started.
+- `ViewModel.reset()` force-disposes all cached generations, including retained
+  instances, blocks reentrant resolution during teardown, clears configuration
+  and lifecycle observers, and allows initialization again.
 
 Lifecycle hooks are `onCreate`, `onBind`, `onUnbind`, and `onDispose`. Register
 owned resources with `addDispose` and let the framework invoke cleanup.
@@ -218,23 +233,23 @@ owned resources with `addDispose` and let the framework invoke cleanup.
 - Full-state equality is local initializer `equals` → global
   `ViewModelConfig.equals` → reference identity for class values; value types
   are treated as changed without a comparator.
-- `listenStateSelect` requires an `Equatable` selected value and compares it
-  with Swift equality. Unlike current Flutter `view_model`, it has no local
-  selector-`equals` argument.
-- Pair `StateViewModelValueWatcher` with `@ReadViewModel`, not
-  `@WatchViewModel`, to avoid a duplicate broad subscription.
+- `listenStateSelect` requires an `Equatable` selected value. Comparison order
+  is local selector `equals` → global `ViewModelConfig.equals` → Swift equality.
+- Prefer the strongly typed `StateViewModelSelector`; keep
+  `StateViewModelValueWatcher` only for compatibility with multiple untyped
+  selectors. Both rebuild subscriptions when the VM generation changes.
+- Pair either selector view with `@ReadViewModel`, not `@WatchViewModel`, to
+  avoid a duplicate broad subscription.
 
 ## Pause/resume and platform differences
 
 - No pause provider is installed by default.
 - Add `AppPauseProvider` for application visibility or
   `UIKitVisibilityPauseProvider` for UIKit page visibility.
-- AppleViewModel additionally exposes `ObservableValue` / `ObserverBuilder`.
 - This port currently has no Flutter DevTools extension, `@GenSpec` generator,
-  scoped `overrideWith/runWithOverride`, route provider, or ticker provider.
-- Swift public builders are non-throwing; invalid construction/dependency
-  graphs therefore surface as fail-fast preconditions rather than Dart-style
-  recoverable `ViewModelError`s at the public resolution boundary.
+  route provider, or ticker provider.
+- Swift retains fail-fast `watch/read` for source compatibility and additionally
+  exposes throwing builders plus recoverable `watchThrowing/readThrowing`.
 
 ## Pitfalls to catch
 
@@ -264,15 +279,16 @@ owned resources with `addDispose` and let the framework invoke cleanup.
 - Dispose every test binding.
 - `XCTestCase.setUp()` is nonisolated; wrap global reset in
   `MainActor.assumeIsolated`.
-- Use `setProxy` / `clearProxy` with `defer` for mocks.
+- Prefer `overrideWith` (idempotent restore) or async task-local
+  `runWithOverride` for mocks. Keep `setProxy` / `clearProxy` only for legacy
+  global override compatibility.
 
 ```swift
 final class MyTests: XCTestCase {
     override func setUp() {
         super.setUp()
         MainActor.assumeIsolated {
-            InstanceManager.shared.debugReset()
-            ViewModel.debugReset()
+            ViewModel.reset()
         }
     }
 
@@ -299,5 +315,5 @@ Platforms: iOS 16+, macOS 13+, tvOS 16+, watchOS 9+, visionOS 1+;
 Swift 6.0+.
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.5.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.6.0")
 ```

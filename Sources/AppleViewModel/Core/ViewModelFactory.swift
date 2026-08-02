@@ -17,12 +17,20 @@ public protocol ViewModelFactory<VM>: AnyObject {
     associatedtype VM: ViewModel
 
     func build() -> VM
+    /// Recoverable construction entry point used by the runtime.
+    ///
+    /// Existing factories only need to implement `build()`; the default
+    /// implementation below preserves source compatibility. Factories that
+    /// can fail may override this method and resolve them through
+    /// `ViewModelBinding.watchThrowing` / `readThrowing`.
+    func buildThrowing() throws -> VM
     func key() -> AnyHashable?
     func tag() -> AnyHashable?
     func aliveForever() -> Bool
 }
 
 public extension ViewModelFactory {
+    func buildThrowing() throws -> VM { build() }
     func key() -> AnyHashable? { nil }
     func tag() -> AnyHashable? { nil }
     func aliveForever() -> Bool { false }

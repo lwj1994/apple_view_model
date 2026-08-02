@@ -9,7 +9,11 @@ final class BasicViewModelTests: XCTestCase {
     }
 
     func test_notifyListeners_fires_every_registered_callback() {
-        let vm = CounterViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterViewModel> { CounterViewModel() }
+        )
         var a = 0
         var b = 0
         _ = vm.listen { a += 1 }
@@ -22,7 +26,11 @@ final class BasicViewModelTests: XCTestCase {
     }
 
     func test_update_block_triggers_notifyListeners_once() {
-        let vm = CounterViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterViewModel> { CounterViewModel() }
+        )
         var fired = 0
         _ = vm.listen { fired += 1 }
 
@@ -33,7 +41,11 @@ final class BasicViewModelTests: XCTestCase {
     }
 
     func test_listen_returns_disposer_that_detaches_listener() {
-        let vm = CounterViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterViewModel> { CounterViewModel() }
+        )
         var fired = 0
         let disposer = vm.listen { fired += 1 }
 
@@ -46,23 +58,31 @@ final class BasicViewModelTests: XCTestCase {
     }
 
     func test_addDispose_runs_in_registration_order_on_dispose() {
-        let vm = CounterViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterViewModel> { CounterViewModel() }
+        )
         var order: [Int] = []
         vm.addDispose { order.append(1) }
         vm.addDispose { order.append(2) }
         vm.addDispose { order.append(3) }
 
-        vm.onDispose(InstanceArg())
+        binding.dispose()
 
         XCTAssertEqual(order, [1, 2, 3])
     }
 
     func test_notifyListeners_after_disposed_is_a_noop() {
-        let vm = CounterViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterViewModel> { CounterViewModel() }
+        )
         var fired = 0
         _ = vm.listen { fired += 1 }
 
-        vm.onDispose(InstanceArg())
+        binding.dispose()
         vm.notifyListeners()
 
         XCTAssertEqual(fired, 0, "disposed VM should not dispatch listeners")
@@ -70,14 +90,22 @@ final class BasicViewModelTests: XCTestCase {
     }
 
     func test_isDisposed_is_false_initially_and_true_after_onDispose() {
-        let vm = CounterViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterViewModel> { CounterViewModel() }
+        )
         XCTAssertFalse(vm.isDisposed)
-        vm.onDispose(InstanceArg())
+        binding.dispose()
         XCTAssertTrue(vm.isDisposed)
     }
 
     func test_update_async_awaits_then_notifies() async throws {
-        let vm = CounterViewModel()
+        let binding = ViewModelBinding()
+        defer { binding.dispose() }
+        let vm = binding.read(
+            ViewModelSpec<CounterViewModel> { CounterViewModel() }
+        )
         var fired = 0
         _ = vm.listen { fired += 1 }
 

@@ -16,7 +16,7 @@ public struct ViewModelError: Error, CustomStringConvertible, Sendable {
     }
 }
 
-/// Error category passed as the third argument to `ViewModelConfig.onError`.
+/// Error category passed to `ViewModelConfig.onError`.
 ///
 /// Matches the Dart `ErrorType` enum one-to-one.
 public enum ErrorType: Sendable {

@@ -13,7 +13,7 @@ Core idea: **anything can be a ViewModel** — business state, repositories, net
 - **Managed module composition**: `ViewModelSpec` declares how to build and identify a module. Retrieve instances with `binding.watch(spec)` / `binding.read(spec)`. Inside a VM, expose dependencies through computed properties that resolve from `viewModelBinding`.
 - **Automatic lifecycle**: Every host holds a `ViewModelBinding`. Reference counting drives disposal — when the last host releases its reference, the VM's `onDispose` fires. No manual cleanup.
 - **Default UI integration**:
-  - SwiftUI: `@WatchViewModel` / `@ReadViewModel` / `ObserverBuilder` / `StateViewModelValueWatcher`. `ViewModel` is itself an `ObservableObject`.
+  - SwiftUI: `@WatchViewModel` / `@ReadViewModel` / typed `StateViewModelSelector` / compatibility `StateViewModelValueWatcher`. `ViewModel` is itself an `ObservableObject`.
   - UIKit: `NSObject.viewModelBinding` — works on `UIViewController`, `UIView`, or any `NSObject`. Associated-object lifetime auto-disposes the binding.
 - **Platforms**: iOS 16+; macOS 13+; tvOS 16+; watchOS 9+; visionOS 1+. UIKit files are guarded with `#if canImport(UIKit)`.
 - **Swift**: Requires Swift 6.0+, full language mode and strict concurrency. All public API is `@MainActor`.
@@ -40,7 +40,7 @@ Deployment target: **iOS 16+**. Swift 6 language mode with strict concurrency (`
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.5.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.6.0")
 ```
 
 Add `"AppleViewModel"` to your target dependencies.
@@ -105,7 +105,7 @@ Declare how the VM is built and whether instances are shared. Specs are typicall
 let counterSpec = ViewModelSpec<CounterViewModel> { CounterViewModel() }
 
 // Intentional app-wide service: same key → same instance across all bindings.
-// aliveForever skips automatic disposal at zero owners, but recycle/debugReset still dispose it.
+// aliveForever skips automatic disposal at zero owners, but recycle/reset still dispose it.
 let authSpec = ViewModelSpec<AuthViewModel>(key: "auth", aliveForever: true) { AuthViewModel() }
 
 // Parameterized spec: different key per argument, same-argument instances shared
@@ -116,7 +116,21 @@ let userSpec = ViewModelSpecWithArg<UserViewModel, String>(
 // Usage: binding.watch(userSpec("abc"))
 ```
 
-Specs support `setProxy` / `clearProxy` for swapping implementations in tests.
+Specs support scoped `overrideWith` / `runWithOverride` for tests. Nested and
+out-of-order restore are safe, and overlapping async `runWithOverride` bodies
+are task-local. `setProxy` / `clearProxy` remain as the legacy global fallback.
+
+When a factory can fail, use `throwingBuilder` with the recoverable binding API:
+
+```swift
+let profileSpec = ViewModelSpec<ProfileViewModel>(throwingBuilder: {
+    try ProfileViewModel.load()
+})
+
+let profile = try binding.readThrowing(profileSpec)
+```
+
+Normal `watch` / `read` remain fail-fast for source compatibility.
 
 Identity is the resolved ViewModel type plus its effective key. An unkeyed spec receives a private key from the resolving binding, so the same type is reused within that binding and isolated from other bindings. Use an explicit `key` only for intentional cross-binding sharing or multiple instances of the same type in one binding. `tag` is a grouping/lookup label and does not participate in identity. A key does not retain an instance; `aliveForever` only skips automatic disposal when its owner set becomes empty.
 
@@ -209,6 +223,9 @@ Normal application code should keep a stable spec and use one of these APIs:
 
 Choose `watch` when ViewModel notifications should update the owner. Choose
 `read` for lifecycle-bound access without subscribing to those notifications.
+Use `watchThrowing` / `readThrowing` when builder failures, dependency-cycle
+validation, or reset conflicts must be handled as recoverable errors; ordinary
+`watch` / `read` intentionally fail fast for those failures.
 
 ### Advanced: cached lookup
 
@@ -229,7 +246,10 @@ Choose `watch` when ViewModel notifications should update the owner. Choose
 | `readCachesByTag(_:)` | No; returns all hits | Yes | No | Yes |
 
 Single-result non-`maybe` lookups throw on a miss, and tag lookup can be
-ambiguous when several instances share a tag. If the caller has a spec—even a
+ambiguous when several instances share a tag. The source-compatible non-throwing
+`maybe*` APIs return `nil` on lookup failure. Use `maybeWatchCachedThrowing`,
+`maybeReadCachedThrowing`, or `ViewModel.maybeReadCachedThrowing` when unexpected
+non-`ViewModelError` failures must be preserved. If the caller has a spec—even a
 keyed or tagged spec—use `watch(spec)` / `read(spec)` instead.
 
 `listen`, `listenState`, and `listenStateSelect` use `read` internally and automatically remove their side-effect subscriptions when the binding disposes. Do not put a `listen` call in a repeatedly evaluated resolver property.
@@ -237,7 +257,8 @@ keyed or tagged spec—use `watch(spec)` / `read(spec)` instead.
 ## Lifecycle controls and ownership
 
 - `recycle(vm)` is a destructive global escape hatch: it removes every direct and parent owner path and disposes the shared object, including an `aliveForever` object. The next resolver-property access creates a fresh instance.
-- `aliveForever` requires an explicit key at every resolution site and skips automatic disposal when ownership reaches zero; it does not prevent explicit `recycle` or `InstanceManager.shared.debugReset()`.
+- `aliveForever` requires an explicit key at every resolution site and skips automatic disposal when ownership reaches zero; it does not prevent explicit `recycle` or `ViewModel.reset()`.
+- `ViewModel.reset()` force-disposes every cached generation (including retained instances), rejects reentrant creation while teardown is running, clears global configuration and lifecycle observers, and permits clean re-initialization.
 - Direct and parent-propagated paths are source-aware. `onBind` runs for the first source of a visible binding id, and `onUnbind` for the last source.
 
 There is no in-place instance replacement API. To obtain an independent instance, use a new explicit key. If replacing the shared cached generation globally is intentional, call `recycle(vm)` and let resolver properties call `watch(spec)` / `read(spec)` again. The cache miss creates a new handle and dependency tree; owner paths, watch/listen subscriptions, and dependency edges are not migrated from the disposed object.
@@ -249,31 +270,23 @@ Construction and dependency graphs are checked. Recursive construction, runtime 
 ```swift
 @ReadViewModel(userSpec) var vm: UserViewModel
 
-StateViewModelValueWatcher(
+StateViewModelSelector(
     viewModel: vm,
-    selectors: [\.name, \.age]
-) { state in
-    Text("\(state.name), age \(state.age)")
+    selector: { $0.name }
+) { name in
+    Text(name)
 }
 ```
 
-Only `name` or `age` changes trigger a rebuild; other fields in `state` are ignored.
+Only the strongly typed selected value triggers a rebuild. Pass `equals` when
+that selection needs a local comparison rule. Equality priority is local
+selector `equals` → global `ViewModelConfig.equals` → Swift `Equatable`.
 
-Use `@ReadViewModel` with selector-based observation so the broad ViewModel subscription from `watch` does not also rebuild the view. Full-state equality uses the `StateViewModel` initializer's local `equals`, then `ViewModelConfig.equals`, then reference identity for class values (value types are treated as changed without a comparator). Selected values use Swift `Equatable` comparison.
-
-## ObservableValue
-
-For lightweight cross-component state that doesn't need a full ViewModel:
-
-```swift
-let isDarkMode = ObservableValue<Bool>(initialValue: false, shareKey: "theme-dark")
-
-ObserverBuilder(observable: isDarkMode) { dark in
-    Image(systemName: dark ? "moon.fill" : "sun.max.fill")
-}
-```
-
-Two `ObservableValue` instances with the same `shareKey` read and write the same underlying state.
+`StateViewModelValueWatcher` remains available for a list of untyped selectors.
+Both selector views rebuild their subscriptions when the ViewModel generation
+changes. Pair either one with `@ReadViewModel`, so `watch` does not add a broad
+duplicate rebuild. Full-state equality remains local initializer `equals` →
+global `ViewModelConfig.equals` → reference identity for class values.
 
 ## Pause / Resume
 
@@ -309,6 +322,9 @@ struct MyApp: App {
 }
 ```
 
+`onError` may throw; the framework catches that secondary failure and logs it
+together with the original callback error so notification/disposal can continue.
+
 ## Testing
 
 Tests must run single-threaded and in XCTest runner order:
@@ -323,8 +339,10 @@ process-global state that tests reset between cases.
 
 ```swift
 func test_with_mock() {
-    counterSpec.setProxy(ViewModelSpec { MockCounterViewModel() })
-    defer { counterSpec.clearProxy() }
+    let restore = counterSpec.overrideWith(
+        ViewModelSpec { MockCounterViewModel() }
+    )
+    defer { restore() }
 
     let binding = ViewModelBinding()
     let vm = binding.watch(counterSpec)
@@ -353,8 +371,7 @@ Reset global state between tests:
 override func setUp() {
     super.setUp()
     MainActor.assumeIsolated {
-        InstanceManager.shared.debugReset()
-        ViewModel.debugReset()
+        ViewModel.reset()
     }
 }
 ```

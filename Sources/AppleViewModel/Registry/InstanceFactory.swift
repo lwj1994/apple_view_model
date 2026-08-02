@@ -6,10 +6,10 @@ import Foundation
 ///   throws on miss. Supplying a builder turns the call into "get or create".
 /// - `arg`: Carries `key`, `tag`, `bindingId`, and `aliveForever`.
 struct InstanceFactory<Value: AnyObject> {
-    let builder: (@MainActor () -> Value)?
+    let builder: (@MainActor () throws -> Value)?
     let arg: InstanceArg
 
-    init(builder: (@MainActor () -> Value)? = nil, arg: InstanceArg = InstanceArg()) {
+    init(builder: (@MainActor () throws -> Value)? = nil, arg: InstanceArg = InstanceArg()) {
         self.builder = builder
         self.arg = arg
     }
@@ -20,7 +20,7 @@ struct InstanceFactory<Value: AnyObject> {
         builder == nil && arg.key == nil
     }
 
-    func copy(builder: (@MainActor () -> Value)? = nil, arg: InstanceArg? = nil) -> InstanceFactory<Value> {
+    func copy(builder: (@MainActor () throws -> Value)? = nil, arg: InstanceArg? = nil) -> InstanceFactory<Value> {
         InstanceFactory(builder: builder ?? self.builder, arg: arg ?? self.arg)
     }
 }

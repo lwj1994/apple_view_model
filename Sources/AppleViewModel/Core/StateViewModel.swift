@@ -18,8 +18,13 @@ open class StateViewModel<State>: ViewModel {
     public private(set) var previousState: State?
     public let initialState: State
 
+    private struct StateListenerEntry {
+        let id: UUID
+        let callback: (State, State) throws -> Void
+    }
+
     private let equalsFn: (State, State) -> Bool
-    private var stateListeners: [UUID: (State?, State) -> Void] = [:]
+    private var stateListeners: [StateListenerEntry] = []
 
     public init(state: State, equals: ((State, State) -> Bool)? = nil) {
         self.state = state
@@ -46,34 +51,55 @@ open class StateViewModel<State>: ViewModel {
     /// Subscribe to raw state changes; callback receives `(previous, current)`.
     @discardableResult
     public func listenState(
-        onChanged: @escaping (State?, State) -> Void
+        onChanged: @escaping (State?, State) throws -> Void
     ) -> () -> Void {
-        let id = UUID()
-        stateListeners[id] = onChanged
-        return { [weak self] in
-            self?.stateListeners.removeValue(forKey: id)
+        _listenStateTransition { previous, current in
+            try onChanged(previous, current)
         }
     }
 
-    /// Subscribe to the output of a selector; the callback only fires when
-    /// `selector(previous) != selector(current)`.
+    /// Internal non-optional state transition stream used by selector hosts.
+    ///
+    /// Keeping the transition raw lets long-lived SwiftUI `@StateObject` hosts
+    /// apply their latest selector configuration without replacing the
+    /// ViewModel subscription on every parent render.
+    @discardableResult
+    func _listenStateTransition(
+        onChanged: @escaping (State, State) throws -> Void
+    ) -> () -> Void {
+        let id = UUID()
+        stateListeners.append(StateListenerEntry(
+            id: id,
+            callback: onChanged
+        ))
+        return { [weak self] in
+            self?.stateListeners.removeAll { $0.id == id }
+        }
+    }
+
+    /// Subscribe to the output of a selector. Equality resolution is local
+    /// `equals` → global `ViewModelConfig.equals` → Swift `Equatable`.
     @discardableResult
     public func listenStateSelect<R: Equatable>(
         selector: @escaping (State) -> R,
-        onChanged: @escaping (R?, R) -> Void
+        equals: ((R, R) -> Bool)? = nil,
+        onChanged: @escaping (R?, R) throws -> Void
     ) -> () -> Void {
-        let wrapped: (State?, State) -> Void = { prevState, currState in
-            let prevSel = prevState.map { selector($0) }
+        let globalEquals = ViewModel.config.equals
+        let effectiveEquals: (R, R) -> Bool = equals ?? { previous, current in
+            if let globalEquals {
+                return globalEquals(previous, current)
+            }
+            return previous == current
+        }
+        let wrapped: (State, State) throws -> Void = { prevState, currState in
+            let prevSel = selector(prevState)
             let currSel = selector(currState)
-            if prevSel != currSel {
-                onChanged(prevSel, currSel)
+            if !effectiveEquals(prevSel, currSel) {
+                try onChanged(prevSel, currSel)
             }
         }
-        let id = UUID()
-        stateListeners[id] = wrapped
-        return { [weak self] in
-            self?.stateListeners.removeValue(forKey: id)
-        }
+        return _listenStateTransition(onChanged: wrapped)
     }
 
     /// The single mutation entry point. Emits notifications when the incoming
@@ -84,13 +110,16 @@ open class StateViewModel<State>: ViewModel {
             return
         }
         if equalsFn(state, newState) { return }
-        previousState = state
+        let previous = state
+        let current = newState
+        previousState = previous
         state = newState
         // Phase 1: state listeners receive (previous, current).
-        let snapshot = Array(stateListeners.values)
-        for listener in snapshot {
+        let snapshot = stateListeners
+        for entry in snapshot {
+            guard stateListeners.contains(where: { $0.id == entry.id }) else { continue }
             do {
-                try runCatching { listener(previousState, state) }
+                try entry.callback(previous, current)
             } catch {
                 reportViewModelError(
                     error, type: .listener, context: "stateListener error")
@@ -103,9 +132,5 @@ open class StateViewModel<State>: ViewModel {
     open override func dispose() {
         stateListeners.removeAll()
         super.dispose()
-    }
-
-    private func runCatching(_ block: () throws -> Void) throws {
-        try block()
     }
 }

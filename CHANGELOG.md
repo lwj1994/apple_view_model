@@ -6,11 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-02
+
 ### Added
 
 - Add an English, skill-local Instagram architecture example showing a
   multi-root SwiftUI app composed from API, repository, user, feed,
   post-detail, comment, and startup-coordinator ViewModels.
+- Add nested/idempotent `overrideWith` and task-local async
+  `runWithOverride` for base and parameterized specs.
+- Add `throwingBuilder` plus recoverable `watchThrowing` / `readThrowing`
+  resolution alongside the source-compatible fail-fast `watch` / `read` APIs.
+- Add the strongly typed SwiftUI `StateViewModelSelector` with optional local
+  equality.
+
+### Changed
+
+- `ViewModel.reset()` now force-disposes every cached generation, including
+  `aliveForever`, rejects reentrant creation, clears configuration/lifecycle
+  state only after teardown, and permits re-initialization.
+- Listener and state-listener dispatch uses ordered token snapshots, isolates
+  throwing callbacks, preserves frozen diffs across reentrant updates, and
+  applies selector equality as local → global → `Equatable`.
+- SwiftUI ViewModel/cached hosts re-resolve after recycle, and state selector
+  hosts rebuild subscriptions when the VM generation changes.
+- Existing non-throwing `maybe*Cached` APIs remain source-compatible; new
+  `maybe*CachedThrowing` counterparts return `nil` for `ViewModelError` while
+  preserving unexpected errors. A throwing global error handler is itself
+  caught and logged.
+
+### Fixed
+
+- Keep SwiftUI watch/read and cached hosts aligned with the latest factory,
+  key, tag, selector, and equality inputs while correctly following recycled
+  ViewModel generations.
+- Roll back provisional owner and dependency attachments when construction,
+  lifecycle reentrancy, or cycle validation aborts resolution, including newly
+  created `aliveForever` generations.
+
+### Removed
+
+- Remove `ObservableValue`, `ObservableStateViewModel`, and SwiftUI
+  `ObserverBuilder` APIs to match Flutter `view_model` 1.1.0.
 
 ## [0.5.0] - 2026-07-27
 

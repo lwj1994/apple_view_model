@@ -10,8 +10,7 @@ import XCTest
 enum TestEnv {
     static func reset() {
         MainActor.assumeIsolated {
-            InstanceManager.shared.debugReset()
-            ViewModel.debugReset()
+            ViewModel.reset()
         }
     }
 }

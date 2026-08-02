@@ -29,7 +29,7 @@ final class ViewModelDependencyBinding: ViewModelBinding {
         propagatedOwners = parentHandler.constructionExternalOwners
         installDependencyHooks(
             attached: { [weak self] handle, viewModel in
-                self?.handleAttached(handle, viewModel: viewModel)
+                try self?.handleAttached(handle, viewModel: viewModel)
             },
             detached: { [weak self] handle, viewModel in
                 self?.handleDetached(handle, viewModel: viewModel)
@@ -64,12 +64,32 @@ final class ViewModelDependencyBinding: ViewModelBinding {
         dependencies.removeAll()
     }
 
-    private func handleAttached(_ handle: any _AnyHandle, viewModel: ViewModel) {
-        requireAcyclicDependency(viewModel)
+    private func handleAttached(
+        _ handle: any _AnyHandle,
+        viewModel: ViewModel
+    ) throws {
+        try requireAcyclicDependency(viewModel)
         let key = ObjectIdentifier(handle)
         dependencies[key] = DependencyEntry(handle: handle, viewModel: viewModel)
         for owner in propagatedOwners {
             attachOwner(handle, viewModel: viewModel, owner: owner)
+        }
+        guard
+            !dependencyDisposed,
+            !handle.isDisposedAny,
+            !viewModel.isDisposed
+        else {
+            // An `onBind` callback may synchronously recycle the child or tear
+            // down this dependency scope before attachment commits. The handle
+            // listener is not installed yet, so clean the provisional graph
+            // entry explicitly and let the controller roll back its direct path.
+            dependencies.removeValue(forKey: key)
+            for owner in propagatedOwners {
+                detachOwner(handle, viewModel: viewModel, owner: owner)
+            }
+            throw ViewModelError(
+                "Cannot attach \(type(of: viewModel)): dependency was disposed during resolution."
+            )
         }
     }
 
@@ -87,18 +107,19 @@ final class ViewModelDependencyBinding: ViewModelBinding {
         onDependencyUpdate(viewModel)
     }
 
-    private func requireAcyclicDependency(_ dependency: ViewModel) {
+    private func requireAcyclicDependency(_ dependency: ViewModel) throws {
         guard let parent else { return }
         let createsCycle = dependency === parent
             || dependency.dependencyBindingIfCreated?.reaches(
                 parent,
                 visited: []
             ) == true
-        precondition(
-            !createsCycle,
-            "Circular ViewModel dependency detected: "
-                + "\(type(of: parent)) -> \(type(of: dependency))."
-        )
+        if createsCycle {
+            throw ViewModelError(
+                "Circular ViewModel dependency detected: "
+                    + "\(type(of: parent)) -> \(type(of: dependency))."
+            )
+        }
     }
 
     private func reaches(
@@ -150,8 +171,22 @@ final class ViewModelDependencyBinding: ViewModelBinding {
         owner: ViewModelBinding
     ) {
         guard !handle.isDisposedAny, !viewModel.isDisposed else { return }
-        handle.bindAnyFrom(bindingId: owner.id, source: self)
+        // Register both sides before considering the propagation committed.
+        // Either callback can synchronously dispose/remove `owner`; the final
+        // membership check rolls back both sides if reentrancy invalidated it.
         viewModel.refHandler.addRef(owner, source: self)
+        handle.bindAnyFrom(bindingId: owner.id, source: self)
+
+        let dependencyStillAttached = dependencies[ObjectIdentifier(handle)] != nil
+        let ownerStillPropagated = propagatedOwners.contains { $0 === owner }
+        if dependencyDisposed
+            || owner.isDisposed
+            || !dependencyStillAttached
+            || !ownerStillPropagated
+            || handle.isDisposedAny
+            || viewModel.isDisposed {
+            detachOwner(handle, viewModel: viewModel, owner: owner)
+        }
     }
 
     private func detachOwner(

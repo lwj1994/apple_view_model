@@ -23,6 +23,7 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
 
     private static var _lifecycles: [any ViewModelLifecycle] = []
     private static var _initialized = false
+    private static var _isResetting = false
 
     /// Snapshot of the global configuration.
     ///
@@ -43,7 +44,7 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
         config: ViewModelConfig = ViewModelConfig(),
         lifecycles: [any ViewModelLifecycle] = []
     ) {
-        if _initialized { return }
+        if _initialized || _isResetting { return }
         _initialized = true
         ViewModelGlobalConfig.set(config)
         _lifecycles.append(contentsOf: lifecycles)
@@ -62,11 +63,28 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
         _lifecycles.removeAll { $0 === lifecycle }
     }
 
-    /// Test-only hook: reset the global configuration and lifecycle list.
-    public static func debugReset() {
+    /// Completely resets the ViewModel runtime for test/process isolation.
+    ///
+    /// Every cached generation is force-disposed, including `aliveForever`
+    /// entries. Configuration and lifecycle observers are cleared, and the
+    /// runtime may be initialized again afterward.
+    public static func reset() {
+        // Cover the whole reset, not only registry disposal. A nested reset
+        // triggered by one instance's teardown must not clear configuration or
+        // lifecycle observers while the outer reset is still disposing peers.
+        guard !_isResetting else { return }
+        _isResetting = true
+        defer { _isResetting = false }
+
+        InstanceManager.shared.debugReset()
         _initialized = false
         ViewModelGlobalConfig.reset()
         _lifecycles.removeAll()
+    }
+
+    @available(*, deprecated, renamed: "reset")
+    public static func debugReset() {
+        reset()
     }
 
     // MARK: - Static cache lookup
@@ -86,10 +104,14 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
                     T.self,
                     factory: InstanceFactory(arg: InstanceArg(key: key))
                 )
-            } catch is ViewModelError where tag == nil {
-                throw ViewModelError("no \(T.self) instance found")
+            } catch is ViewModelError {
+                if tag == nil {
+                    throw ViewModelError("no \(T.self) instance found")
+                }
+                // Expected key miss: fall through to the optional tag lookup.
             } catch {
-                if tag == nil { throw error }
+                // Only a ViewModelError represents an expected cache miss.
+                throw error
             }
         }
         if found == nil {
@@ -107,13 +129,28 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
         return vm
     }
 
-    /// Advanced lookup-only API. Same as `readCached` but returns `nil` on miss
-    /// instead of throwing. Prefer spec-based resolution in normal code.
+    /// Advanced lookup-only API. Same as `readCached` but returns `nil` on a
+    /// lookup failure. Prefer spec-based resolution in normal code.
     public static func maybeReadCached<T: ViewModel>(
         key: AnyHashable? = nil,
         tag: AnyHashable? = nil
     ) -> T? {
-        try? readCached(key: key, tag: tag)
+        try? maybeReadCachedThrowing(key: key, tag: tag)
+    }
+
+    /// Recoverable counterpart of `maybeReadCached` that preserves unexpected
+    /// non-ViewModel errors while returning `nil` for framework lookup errors.
+    public static func maybeReadCachedThrowing<T: ViewModel>(
+        key: AnyHashable? = nil,
+        tag: AnyHashable? = nil
+    ) throws -> T? {
+        do {
+            return try readCached(key: key, tag: tag)
+        } catch is ViewModelError {
+            return nil
+        } catch {
+            throw error
+        }
     }
 
     // MARK: - Per-instance state
@@ -123,7 +160,12 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
 
     public var tag: AnyHashable? { instanceArg.tag }
 
-    private var listeners: [UUID: () -> Void] = [:]
+    private struct ListenerEntry {
+        let id: UUID
+        let callback: () throws -> Void
+    }
+
+    private var listeners: [ListenerEntry] = []
     public var hasListeners: Bool { !listeners.isEmpty }
 
     private let autoDispose = AutoDisposeController()
@@ -158,11 +200,11 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
 
     /// Subscribe to change notifications. Returns a closure that cancels the subscription.
     @discardableResult
-    public func listen(onChanged: @escaping () -> Void) -> () -> Void {
+    public func listen(onChanged: @escaping () throws -> Void) -> () -> Void {
         let id = UUID()
-        listeners[id] = onChanged
+        listeners.append(ListenerEntry(id: id, callback: onChanged))
         return { [weak self] in
-            self?.listeners.removeValue(forKey: id)
+            self?.listeners.removeAll { $0.id == id }
         }
     }
 
@@ -180,10 +222,11 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
         runInViewModelUpdateTransaction {
             objectWillChange.send()
             // Snapshot first so callbacks can add / remove listeners without breaking iteration.
-            let snapshot = Array(listeners.values)
-            for listener in snapshot {
+            let snapshot = listeners
+            for entry in snapshot {
+                guard listeners.contains(where: { $0.id == entry.id }) else { continue }
                 do {
-                    try runCatching(listener)
+                    try entry.callback()
                 } catch {
                     reportViewModelError(
                         error, type: .listener, context: "notifyListeners error")
@@ -201,9 +244,10 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
         notifyListeners()
     }
 
-    /// Run `block` synchronously and then call `notifyListeners()` exactly once.
-    public func update(_ block: () -> Void) {
-        block()
+    /// Run `block` synchronously and notify exactly once after success.
+    /// A thrown error is propagated and does not produce a notification.
+    public func update(_ block: () throws -> Void) rethrows {
+        try block()
         notifyListeners()
     }
 

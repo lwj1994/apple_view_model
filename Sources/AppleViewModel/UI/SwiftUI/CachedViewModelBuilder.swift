@@ -27,13 +27,16 @@ public struct CachedViewModelBuilder<VM: ViewModel, Content: View>: View {
     }
 
     public var body: some View {
-        if let vm = host.viewModel {
+        if let vm = host.update(shareKey: shareKey, tag: tag) {
             content(vm)
         } else {
             Color.clear.onAppear {
                 reportViewModelError(
                     ViewModelError(
-                        "\(VM.self) not found in CachedViewModelBuilder. key=\(String(describing: shareKey)) tag=\(String(describing: tag))"
+                        CachedViewModelHost<VM>.missingErrorMessage(
+                            shareKey: shareKey,
+                            tag: tag
+                        )
                     ),
                     type: .listener,
                     context: "CachedViewModelBuilder not found"
@@ -45,21 +48,72 @@ public struct CachedViewModelBuilder<VM: ViewModel, Content: View>: View {
 
 @MainActor
 final class CachedViewModelHost<VM: ViewModel>: ObservableObject {
-    let binding: HostedViewModelBinding
-    let viewModel: VM?
+    nonisolated(unsafe) private var bindingStorage: HostedViewModelBinding
+    private var shareKey: AnyHashable?
+    private var tag: AnyHashable?
 
-    init(shareKey: AnyHashable?, tag: AnyHashable?) {
-        let b = HostedViewModelBinding()
-        self.binding = b
-        let vm: VM? = b.maybeWatchCached(key: shareKey, tag: tag)
-        self.viewModel = vm
-        b.refresh = { [weak self] in
-            self?.objectWillChange.send()
+    var binding: HostedViewModelBinding { bindingStorage }
+
+    static func missingErrorMessage(
+        shareKey: AnyHashable?,
+        tag: AnyHashable?
+    ) -> String {
+        "\(VM.self) not found in CachedViewModelBuilder. "
+            + "shareKey=\(String(describing: shareKey)) "
+            + "tag=\(String(describing: tag))"
+    }
+
+    /// Cache-only lookup remains live: after the old handle is recycled this
+    /// returns `nil`, and a later render can observe a newly cached generation.
+    var viewModel: VM? {
+        do {
+            return try binding.maybeWatchCachedThrowing(key: shareKey, tag: tag)
+        } catch {
+            reportViewModelError(
+                error,
+                type: .listener,
+                context: "CachedViewModelHost lookup error"
+            )
+            return nil
         }
     }
 
+    /// Keep a persistent SwiftUI `@StateObject` aligned with the latest cache
+    /// query. Changing either lookup parameter releases every owner held by the
+    /// previous binding before resolving against a fresh binding.
+    @discardableResult
+    func update(shareKey: AnyHashable?, tag: AnyHashable?) -> VM? {
+        guard self.shareKey != shareKey || self.tag != tag else {
+            return viewModel
+        }
+
+        let previousBinding = bindingStorage
+        let nextBinding = HostedViewModelBinding()
+        bindingStorage = nextBinding
+        self.shareKey = shareKey
+        self.tag = tag
+        nextBinding.refresh = { [weak self] in
+            self?.objectWillChange.send()
+        }
+        let nextViewModel = viewModel
+        previousBinding.refresh = {}
+        previousBinding.dispose()
+        return nextViewModel
+    }
+
+    init(shareKey: AnyHashable?, tag: AnyHashable?) {
+        let b = HostedViewModelBinding()
+        self.bindingStorage = b
+        self.shareKey = shareKey
+        self.tag = tag
+        b.refresh = { [weak self] in
+            self?.objectWillChange.send()
+        }
+        _ = viewModel
+    }
+
     deinit {
-        let bindingToDispose = binding
+        let bindingToDispose = bindingStorage
         Task { @MainActor in
             bindingToDispose.dispose()
         }

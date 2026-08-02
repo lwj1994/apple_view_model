@@ -24,7 +24,12 @@ final class InstanceHandle<Value: AnyObject> {
     var bindingIds: [String] { Array(bindingSources.keys) }
     var isDisposed: Bool { disposed }
 
-    private var listeners: [UUID: (InstanceHandle<Value>) -> Void] = [:]
+    private struct ListenerEntry {
+        let id: UUID
+        let callback: (InstanceHandle<Value>) throws -> Void
+    }
+
+    private var listeners: [ListenerEntry] = []
     private var disposed = false
 
     init(
@@ -120,11 +125,13 @@ final class InstanceHandle<Value: AnyObject> {
     }
 
     /// Subscribe to this handle's disposal notification. Returns a cancellation closure.
-    func addListener(_ listener: @escaping (InstanceHandle<Value>) -> Void) -> () -> Void {
+    func addListener(
+        _ listener: @escaping (InstanceHandle<Value>) throws -> Void
+    ) -> () -> Void {
         let id = UUID()
-        listeners[id] = listener
+        listeners.append(ListenerEntry(id: id, callback: listener))
         return { [weak self] in
-            self?.listeners.removeValue(forKey: id)
+            self?.listeners.removeAll { $0.id == id }
         }
     }
 
@@ -177,9 +184,18 @@ final class InstanceHandle<Value: AnyObject> {
     }
 
     private func notifyListeners() {
-        let snapshot = Array(listeners.values)
-        for listener in snapshot {
-            listener(self)
+        let snapshot = listeners
+        for entry in snapshot {
+            guard listeners.contains(where: { $0.id == entry.id }) else { continue }
+            do {
+                try entry.callback(self)
+            } catch {
+                reportViewModelError(
+                    error,
+                    type: .listener,
+                    context: "InstanceHandle listener error"
+                )
+            }
         }
     }
 

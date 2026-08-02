@@ -34,7 +34,7 @@ final class DependencyInjectionTests: XCTestCase {
         let order = b.watch(orderSpec)
         XCTAssertNotNil(order.auth)
 
-        let direct: CounterViewModel = (try? b.readCached(key: "auth")) ?? CounterViewModel()
+        let direct = b.read(authSpec)
         XCTAssertTrue(order.auth === direct)
 
         b.dispose()

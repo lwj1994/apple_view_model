@@ -31,20 +31,3 @@ struct CounterView: View {
         .padding()
     }
 }
-
-/// `ObservableValue` is the escape hatch for cross-component state that does not
-/// need a fully-featured ViewModel: any two call sites sharing the `shareKey`
-/// read/write the same slot.
-let darkModeValue = ObservableValue<Bool>(initialValue: false, shareKey: "theme-dark")
-
-struct ThemeToggle: View {
-    var body: some View {
-        ObserverBuilder(observable: darkModeValue) { dark in
-            Toggle("Dark mode", isOn: Binding(
-                get: { dark },
-                set: { darkModeValue.value = $0 }
-            ))
-            .padding()
-        }
-    }
-}
