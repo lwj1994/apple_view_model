@@ -15,6 +15,7 @@ adapting UI integration and error behavior to Swift.
 - Public API and examples: [repository README](../../README.md)
 - Runtime behavior: `Sources/AppleViewModel/`
 - Contract tests: `Tests/AppleViewModelTests/`
+- Skill-local sharing example: `examples/sharing_example.swift`
 - Architecture example: `examples/instagram_architecture/README.md` — a
   multi-file Instagram-style app composed from API, repository, user, feed,
   post-detail, comment, and startup-coordinator ViewModels.
@@ -73,6 +74,10 @@ A key or tag on a spec does not change this order. Pass the keyed/tagged spec to
   type and remains isolated from other bindings.
 - Use a key for intentional cross-binding sharing or multiple instances of the
   same type in one binding.
+- For temporary sharing across sibling pages or independent bindings, let every
+  participant resolve the same keyed spec with `watch/read`. Their bindings
+  collectively define the local lifetime; the instance auto-disposes after the
+  final participant unbinds.
 - `tag` is only a grouping/lookup label.
 - A key does not retain an instance.
 - `aliveForever` only skips automatic disposal when ownership reaches zero.
@@ -172,6 +177,8 @@ in a repeatedly evaluated resolver property.
   multiplicity, and the other owner's lifecycle are part of the contract.
 - Default ordinary modules to an unkeyed spec with `aliveForever: false`; add a
   key or retention only when sharing or retention is intentional.
+- Prefer keyed, binding-scoped sharing over `aliveForever` when the instance
+  only needs to live while one or more participating pages are alive.
 
 ## ViewModel-to-ViewModel composition
 
@@ -200,6 +207,88 @@ final class CheckoutViewModel: ViewModel {
   visible binding id are released independently.
 - Synchronous propagation is transaction-based; each binding updates at most
   once even in a diamond graph.
+
+## Local scope: sharing one instance across pages
+
+A common case is for page A to display data and page B to edit it. Page A must
+see B's changes when B closes; if both pages are alive, A should react to the
+changes immediately. Prefer the same spec with an explicit key and default
+auto-disposal. Do not set `aliveForever: true` merely to share across pages:
+
+```swift
+@MainActor
+final class DraftViewModel: ViewModel {
+    let documentID: String
+    private(set) var title = ""
+
+    init(documentID: String) {
+        self.documentID = documentID
+        super.init()
+    }
+
+    func updateTitle(_ value: String) {
+        update { title = value }
+    }
+}
+
+let draftViewModelSpec = ViewModelSpecWithArg<DraftViewModel, String>(
+    builder: { DraftViewModel(documentID: $0) },
+    key: { "draft-\($0)" }
+)
+
+struct PageA: View {
+    let documentID: String
+    @WatchViewModel private var draft: DraftViewModel
+
+    init(documentID: String) {
+        self.documentID = documentID
+        _draft = WatchViewModel(draftViewModelSpec(documentID))
+    }
+
+    var body: some View {
+        VStack {
+            Text(draft.title)
+            NavigationLink("Edit") { PageB(documentID: documentID) }
+        }
+    }
+}
+
+struct PageB: View {
+    @WatchViewModel private var draft: DraftViewModel
+
+    init(documentID: String) {
+        _draft = WatchViewModel(draftViewModelSpec(documentID))
+    }
+
+    var body: some View {
+        TextField(
+            "Title",
+            text: Binding(
+                get: { draft.title },
+                set: { draft.updateTitle($0) }
+            )
+        )
+    }
+}
+```
+
+- A and B resolve the same instance because they use the same resolved
+  ViewModel type and key. There is no need to use a cached API to retrieve an
+  instance created by the other page.
+- Both `watch(spec)` and `read(spec)` bind the instance to the current page. Use
+  `watch` when the page must react to VM notifications; use `read` when it only
+  invokes methods.
+- While A and B both exist, each hosted binding owns the instance. Releasing B
+  removes only B's bind, so A keeps the instance alive. When A is also released,
+  the final bind is removed and the instance is automatically reclaimed.
+- A `key` defines shared identity; it does not retain the instance forever. If
+  multiple edit flows can coexist, include a document or session ID in the key
+  to prevent unrelated flows from sharing state.
+- The resulting lifetime is the union of all participating page scopes. This
+  is usually more appropriate than `aliveForever: true`. Use `aliveForever`
+  with an explicit key only when the instance must survive with zero bindings.
+
+See `examples/sharing_example.swift` for the complete example.
 
 ## Lifecycle controls and safety
 
