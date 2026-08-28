@@ -6,6 +6,18 @@
 
 > 📖 Changelog: [CHANGELOG](./CHANGELOG.md) · Releases: [GitHub Releases](https://github.com/lwj1994/apple_view_model/releases)
 
+## 📌 Install the AI coding skill
+
+Install the bundled AppleViewModel skill for Claude Code and other compatible
+coding agents:
+
+```bash
+npx skills add https://github.com/lwj1994/apple_view_model --skill apple-view-model
+```
+
+The skill teaches the agent AppleViewModel's preferred spec-first resolution,
+dependency, lifecycle, `@MainActor`, and ViewModel-owned Task patterns.
+
 **AppleViewModel is a state-management, functional-module composition, DI, and automatic-lifecycle framework** for Apple platforms, with first-class SwiftUI and UIKit integration.
 
 Core idea: **anything can be a ViewModel** — business state, repositories, network services, utility stores, page controllers. Subclass `ViewModel`, declare a `ViewModelSpec`, and you get shared instances with automatic lifecycle management. VMs can depend on other VMs, giving you full DI across modules.
@@ -161,20 +173,10 @@ from that ViewModel; otherwise create it through `taskScope`.
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.6.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.7.0")
 ```
 
 Add `"AppleViewModel"` to your target dependencies.
-
-### Claude Code Skill
-
-This repo includes a Claude Code skill that provides AppleViewModel API reference for AI-assisted coding:
-
-```bash
-npx skills add https://github.com/lwj1994/apple_view_model --skill apple-view-model
-```
-
-Once installed, Claude Code automatically recognizes and uses AppleViewModel API patterns.
 
 ### Architecture Example
 

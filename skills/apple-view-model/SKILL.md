@@ -13,6 +13,7 @@ adapting UI integration and error behavior to Swift.
 ## Source of truth
 
 - Public API and examples: [repository README](../../README.md)
+- Dependency version: latest stable [GitHub Release](https://github.com/lwj1994/apple_view_model/releases)
 - Runtime behavior: `Sources/AppleViewModel/`
 - Contract tests: `Tests/AppleViewModelTests/`
 - Skill-local sharing example: `examples/sharing_example.swift`
@@ -475,7 +476,7 @@ final class MyTests: XCTestCase {
 }
 ```
 
-## Verification and installation
+## Verification and dependency installation
 
 ```bash
 swift build
@@ -485,6 +486,14 @@ swift test --no-parallel
 Platforms: iOS 16+, macOS 13+, tvOS 16+, watchOS 9+, visionOS 1+;
 Swift 6.0+.
 
+Before adding or updating the package dependency, query GitHub Releases and use
+the newest non-draft, non-prerelease tag. Prefer
+`gh release view --repo lwj1994/apple_view_model --json tagName,isDraft,isPrerelease`;
+fall back to the Releases page when `gh` is unavailable. Never infer the version
+from the default branch, a stale README example, or local tags.
+
+At the time this skill was authored, the latest stable release is `0.7.0`:
+
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.6.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.7.0")
 ```
