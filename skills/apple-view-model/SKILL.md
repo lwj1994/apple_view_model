@@ -64,7 +64,83 @@ A key or tag on a spec does not change this order. Pass the keyed/tagged spec to
 - `ViewModelSpec<VM>` is a factory declaration, not the instance itself.
 - `ViewModelBinding` is the owner/container used by SwiftUI, UIKit, NSObject,
   plain Swift hosts, and tests.
-- All public ViewModel and binding APIs are `@MainActor`.
+- ViewModel, binding, lifecycle, and registry APIs are `@MainActor`.
+  `ViewModel.config`, `viewModelLog`, and `reportViewModelError` are explicit
+  thread-safe `nonisolated` exceptions.
+
+## Main-actor concurrency policy
+
+Treat `@MainActor` as a deliberate architecture boundary, not a limitation to
+remove during implementation or refactoring. ViewModel state, the binding
+graph, reference counts, notification delivery, and lifecycle transitions form
+one UI-facing state machine. Normal application state management does not need
+parallel mutation, and keeping that state machine single-threaded avoids locks,
+atomics, cross-actor synchronization, and unnecessary `Sendable` propagation.
+The resulting ordering is deterministic, application integration is simpler,
+and both the framework and consuming code are easier to maintain.
+
+When work genuinely benefits from another executor:
+
+- Keep ViewModel access and state mutation on `@MainActor`.
+- Copy the required input into immutable `Sendable` values before crossing the
+  actor boundary. Do not capture a ViewModel, binding, or mutable state object
+  in background work.
+- Use `Task.detached`, a dedicated actor, or a `nonisolated` service for
+  CPU-heavy or blocking work, then `await` its `Sendable` result and apply that
+  result on `@MainActor`.
+- Remember that `Task {}` created from `@MainActor` inherits the main actor. It
+  is useful for structured asynchronous orchestration, but does not itself move
+  CPU work to a background executor.
+- Await ordinary asynchronous I/O directly when appropriate; actor suspension
+  does not block the main thread.
+
+```swift
+struct StatisticsState: Sendable {
+    var total = 0
+}
+
+@MainActor
+final class StatisticsViewModel: StateViewModel<StatisticsState> {
+    init() { super.init(state: StatisticsState()) }
+
+    func recalculate(values: [Int]) {
+        Task { @MainActor in
+            let total = await Task.detached(priority: .userInitiated) {
+                values.reduce(0, +)
+            }.value
+
+            setState(StatisticsState(total: total))
+        }
+    }
+}
+```
+
+### Bind Tasks to ViewModel lifetime
+
+Use the existing `addDispose` cleanup registry to associate an unstructured
+Task with the ViewModel that owns its result:
+
+```swift
+let task = Task { @MainActor [weak self] in
+    let result = try await loadResult()
+    try Task.checkCancellation()
+    self?.setState(result)
+}
+
+addDispose { task.cancel() }
+```
+
+After registration, normal reference-count disposal, explicit `recycle`, and
+`ViewModel.reset()` cancel the Task when they destroy the ViewModel. Make this
+association explicit for every unstructured worker or result-delivery Task that
+belongs to a ViewModel; merely creating `Task {}` does not register it.
+
+Swift cancellation is cooperative. Task bodies should reach cancellation-aware
+`await` points, call `Task.checkCancellation()`, or inspect
+`Task.isCancelled`, and must not apply a result after cancellation. Prefer a
+weak ViewModel capture so the Task does not unnecessarily extend the object's
+memory lifetime. If one operation creates both a background worker and a
+separate delivery Task, register cancellation for both.
 
 ## Identity, sharing, and retention
 
@@ -179,6 +255,12 @@ in a repeatedly evaluated resolver property.
   key or retention only when sharing or retention is intentional.
 - Prefer keyed, binding-scoped sharing over `aliveForever` when the instance
   only needs to live while one or more participating pages are alive.
+- Preserve the `@MainActor` boundary. If an operation needs background
+  execution, isolate only its `Sendable` workload and return the result to the
+  ViewModel instead of making ViewModel or binding state concurrent.
+- Bind every ViewModel-owned unstructured Task with
+  `addDispose { task.cancel() }`, and make the Task cooperate with cancellation
+  before applying results.
 
 ## ViewModel-to-ViewModel composition
 
@@ -351,8 +433,14 @@ owned resources with `addDispose` and let the framework invoke cleanup.
 6. Resolving any unkeyed `aliveForever` ViewModel, at root or nested scope.
 7. Registering `listen` inside a computed property.
 8. Pairing selector observation with a broad `watch` subscription.
-9. Calling public APIs away from `@MainActor`.
-10. Creating specs inside SwiftUI `body`; keep specs module-level so identity
+9. Calling ViewModel, binding, lifecycle, or registry APIs away from
+   `@MainActor`.
+10. Assuming `Task {}` created on `@MainActor` is background execution, or
+    capturing a ViewModel/binding inside `Task.detached`.
+11. Starting a ViewModel-owned unstructured Task without registering
+    `task.cancel()` through `addDispose`, or ignoring cooperative cancellation
+    before publishing its result.
+12. Creating specs inside SwiftUI `body`; keep specs module-level so identity
     intent and test proxies remain stable.
 
 ## Tests and mocks

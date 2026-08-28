@@ -16,11 +16,109 @@ Core idea: **anything can be a ViewModel** — business state, repositories, net
   - SwiftUI: `@WatchViewModel` / `@ReadViewModel` / typed `StateViewModelSelector` / compatibility `StateViewModelValueWatcher`. `ViewModel` is itself an `ObservableObject`.
   - UIKit: `NSObject.viewModelBinding` — works on `UIViewController`, `UIView`, or any `NSObject`. Associated-object lifetime auto-disposes the binding.
 - **Platforms**: iOS 16+; macOS 13+; tvOS 16+; watchOS 9+; visionOS 1+. UIKit files are guarded with `#if canImport(UIKit)`.
-- **Swift**: Requires Swift 6.0+, full language mode and strict concurrency. All public API is `@MainActor`.
+- **Swift**: Requires Swift 6.0+, full language mode and strict concurrency. ViewModel, binding, lifecycle, and registry APIs are `@MainActor`; logging and error reporting remain safe to call from any actor.
 
 ### Version Compatibility
 
 Deployment target: **iOS 16+**. Swift 6 language mode with strict concurrency (`@MainActor`, `Sendable`).
+
+## Why `@MainActor`?
+
+AppleViewModel deliberately keeps ViewModels, bindings, the instance registry,
+ownership counts, lifecycle callbacks, and state mutations on `@MainActor`.
+These operations form one UI-facing state and ownership graph, so serializing
+them is a design choice rather than an incidental restriction.
+
+Single-threaded execution fully meets the needs of normal application state
+management. It also removes framework-wide locking, atomics, cross-actor
+synchronization, and most `Sendable` plumbing. Creation, notification, and
+disposal order stay deterministic, which makes application code easier to
+reason about, tests more reliable, and the framework less complex to maintain.
+
+This does not require all application work to run on the main thread. Keep
+ViewModel ownership and state mutation on `@MainActor`; move only genuinely
+CPU-heavy or blocking work to `Task.detached`, a dedicated actor, or a
+`nonisolated` service using `Sendable` inputs and outputs. Await the result, then
+apply it back on the main actor. A plain `Task {}` created from `@MainActor`
+inherits the main actor, so it does not by itself move CPU work to a background
+executor. Asynchronous I/O can normally be awaited directly because suspension
+does not block the main thread.
+
+```swift
+struct StatisticsState: Sendable {
+    var total = 0
+}
+
+@MainActor
+final class StatisticsViewModel: StateViewModel<StatisticsState> {
+    init() { super.init(state: StatisticsState()) }
+
+    func recalculate(values: [Int]) {
+        Task { @MainActor in
+            let total = await Task.detached(priority: .userInitiated) {
+                values.reduce(0, +)
+            }.value
+
+            setState(StatisticsState(total: total))
+        }
+    }
+}
+```
+
+`ViewModel.config`, `viewModelLog`, and `reportViewModelError` are the explicit
+thread-safe exceptions: their configuration snapshot is lock-protected, so
+background tasks and `@Sendable` callbacks can report activity without first
+hopping to `@MainActor`.
+
+### Bind a `Task` to ViewModel lifetime
+
+An unstructured `Task` does not automatically know that its result belongs to a
+ViewModel. Bind it to the ViewModel by registering cancellation with
+`addDispose`. AppleViewModel stores that cancellation in the ViewModel's
+internal cleanup queue. When the last owner releases the ViewModel—or an
+explicit `recycle` / `ViewModel.reset()` destroys it—the registered Task is
+automatically cancelled:
+
+```swift
+@MainActor
+final class FeedViewModel: StateViewModel<FeedState> {
+    private let client: FeedClient
+
+    init(client: FeedClient) {
+        self.client = client
+        super.init(state: FeedState())
+    }
+
+    func startRefreshing() {
+        let task = Task { @MainActor [weak self, client] in
+            do {
+                while !Task.isCancelled {
+                    let feed = try await client.fetchFeed()
+                    try Task.checkCancellation()
+                    self?.setState(FeedState(feed: feed))
+                    try await Task.sleep(for: .seconds(30))
+                }
+            } catch is CancellationError {
+                // Expected when this ViewModel is disposed.
+            } catch {
+                reportViewModelError(
+                    error,
+                    type: .listener,
+                    context: "Feed refresh failed"
+                )
+            }
+        }
+
+        addDispose { task.cancel() }
+    }
+}
+```
+
+Cancellation is cooperative: the Task must reach an `await`, call
+`Task.checkCancellation()`, or inspect `Task.isCancelled`. Prefer a weak
+ViewModel capture so the Task does not extend the object's memory lifetime, and
+register every unstructured worker or delivery Task that belongs to the
+ViewModel. Creating `Task {}` alone does not establish this lifecycle binding.
 
 ## Core resolution rules
 
