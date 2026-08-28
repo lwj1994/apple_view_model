@@ -170,6 +170,7 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
 
     private let autoDispose = AutoDisposeController()
     private var dependencyBinding: ViewModelDependencyBinding?
+    private var taskScopeStorage: ViewModelTaskScope?
 
     /// Source-aware owner diagnostics for this ViewModel generation.
     @_spi(Internal) public let refHandler = ViewModelBindingHandler()
@@ -193,6 +194,17 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     }
 
     var dependencyBindingIfCreated: ViewModelDependencyBinding? { dependencyBinding }
+
+    /// Lazily created scope for unstructured Tasks owned by this ViewModel
+    /// generation. Active Tasks are cancelled during ViewModel disposal, and
+    /// completed Tasks remove themselves from the scope automatically.
+    public var taskScope: ViewModelTaskScope {
+        if let taskScopeStorage { return taskScopeStorage }
+        let created = ViewModelTaskScope()
+        if isDisposed { created.dispose() }
+        taskScopeStorage = created
+        return created
+    }
 
     public init() {}
 
@@ -303,6 +315,8 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
 
     open func onDispose(_ arg: InstanceArg) {
         isDisposed = true
+        taskScopeStorage?.dispose()
+        taskScopeStorage = nil
         do {
             try runCatching { autoDispose.dispose() }
         } catch {

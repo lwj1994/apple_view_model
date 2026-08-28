@@ -1,6 +1,6 @@
 ---
 name: apple-view-model
-description: Use AppleViewModel in Swift 6 projects for state management, functional-module composition, dependency injection, automatic lifecycle, SwiftUI/UIKit bindings, ViewModel-to-ViewModel dependencies, sharing, pause/resume, and tests.
+description: Use AppleViewModel in Swift 6 projects for state management, functional-module composition, dependency injection, automatic ViewModel and Task lifecycles, SwiftUI/UIKit bindings, ViewModel-to-ViewModel dependencies, sharing, pause/resume, and tests.
 ---
 
 # AppleViewModel Skill
@@ -31,7 +31,8 @@ Use this skill when:
 - Code imports `AppleViewModel` or uses `ViewModel`, `StateViewModel`,
   `ViewModelSpec`, `ViewModelBinding`, `@WatchViewModel`, or `@ReadViewModel`.
 - The task concerns state, DI, module composition, lifecycle, sharing,
-  pause/resume, SwiftUI/UIKit integration, or AppleViewModel tests.
+  ViewModel-owned Tasks, concurrency, pause/resume, SwiftUI/UIKit integration,
+  or AppleViewModel tests.
 
 ## Resolution decision order (must follow)
 
@@ -58,7 +59,8 @@ A key or tag on a spec does not change this order. Pass the keyed/tagged spec to
 - Prefer managed instances over global singletons. Default specs to no `key` and
   `aliveForever: false`; let the binding graph own creation and disposal.
 - `ViewModel` is the light business/lifecycle base with `listen`,
-  `notifyListeners`, `update`, `addDispose`, and `viewModelBinding`.
+  `notifyListeners`, `update`, `addDispose`, `taskScope`, and
+  `viewModelBinding`.
 - `StateViewModel<State>` adds immutable state, `setState`, `previousState`,
   `listenState`, and `listenStateSelect`.
 - `ViewModelSpec<VM>` is a factory declaration, not the instance itself.
@@ -86,61 +88,54 @@ When work genuinely benefits from another executor:
   actor boundary. Do not capture a ViewModel, binding, or mutable state object
   in background work.
 - Use `Task.detached`, a dedicated actor, or a `nonisolated` service for
-  CPU-heavy or blocking work, then `await` its `Sendable` result and apply that
-  result on `@MainActor`.
+  CPU-heavy or executor-bound work, then `await` its `Sendable` result and apply
+  that result on `@MainActor`. Put legacy blocking APIs on a dedicated thread or
+  queue instead of Swift's cooperative executor.
 - Remember that `Task {}` created from `@MainActor` inherits the main actor. It
   is useful for structured asynchronous orchestration, but does not itself move
   CPU work to a background executor.
 - Await ordinary asynchronous I/O directly when appropriate; actor suspension
   does not block the main thread.
 
-```swift
-struct StatisticsState: Sendable {
-    var total = 0
-}
+## ViewModel-owned Task scope
 
-@MainActor
-final class StatisticsViewModel: StateViewModel<StatisticsState> {
-    init() { super.init(state: StatisticsState()) }
+Treat the lazy `taskScope` as the default creation path for unstructured work
+whose result or side effects belong to one ViewModel generation.
 
-    func recalculate(values: [Int]) {
-        Task { @MainActor in
-            let total = await Task.detached(priority: .userInitiated) {
-                values.reduce(0, +)
-            }.value
-
-            setState(StatisticsState(total: total))
-        }
-    }
-}
-```
-
-### Bind Tasks to ViewModel lifetime
-
-Use the existing `addDispose` cleanup registry to associate an unstructured
-Task with the ViewModel that owns its result:
+- One `ViewModelTaskScope` is owned by each object generation. It is disposed
+  synchronously from `ViewModel.onDispose`, not inferred from object `deinit`.
+- `task(...)` creates a main-actor Task for async I/O, listener loops, and state
+  application. `detachedTask(...)` creates a nonisolated CPU worker and accepts
+  only `Sendable` captures/results; never capture a ViewModel or binding there.
+- Both APIs return the Task handle. Completed Tasks unregister automatically,
+  preventing finished handles from accumulating in long-lived ViewModels.
+- `cancelAll()` cancels current work without disposing the scope, so the same
+  ViewModel can start fresh listeners after a data-source or session rebind.
 
 ```swift
-let task = Task { @MainActor [weak self] in
+taskScope.task { [weak self] in
     let result = try await loadResult()
     try Task.checkCancellation()
     self?.setState(result)
 }
-
-addDispose { task.cancel() }
 ```
 
-After registration, normal reference-count disposal, explicit `recycle`, and
-`ViewModel.reset()` cancel the Task when they destroy the ViewModel. Make this
-association explicit for every unstructured worker or result-delivery Task that
-belongs to a ViewModel; merely creating `Task {}` does not register it.
+Lifecycle rules:
+
+- Zero-owner disposal cancels active Tasks for ordinary managed ViewModels.
+- `recycle` and `ViewModel.reset()` cancel them for every ViewModel, including
+  `aliveForever`; after disposal, any newly created scope Task is cancelled
+  immediately.
+- An `aliveForever` ViewModel skips zero-owner disposal, so its Tasks continue
+  until `cancelAll()`, recycle, or reset.
 
 Swift cancellation is cooperative. Task bodies should reach cancellation-aware
 `await` points, call `Task.checkCancellation()`, or inspect
-`Task.isCancelled`, and must not apply a result after cancellation. Prefer a
-weak ViewModel capture so the Task does not unnecessarily extend the object's
-memory lifetime. If one operation creates both a background worker and a
-separate delivery Task, register cancellation for both.
+`Task.isCancelled` before applying results. Prefer `[weak self]`: logical
+ViewModel disposal does not require Swift `deinit`, but a strong Task capture
+can extend the disposed object's memory lifetime. Use SwiftUI `.task` for
+View-owned work; use raw `Task {}` inside a ViewModel only when its lifetime is
+intentionally independent from that ViewModel.
 
 ## Identity, sharing, and retention
 
@@ -259,8 +254,8 @@ in a repeatedly evaluated resolver property.
   execution, isolate only its `Sendable` workload and return the result to the
   ViewModel instead of making ViewModel or binding state concurrent.
 - Bind every ViewModel-owned unstructured Task with
-  `addDispose { task.cancel() }`, and make the Task cooperate with cancellation
-  before applying results.
+  `taskScope.task` / `taskScope.detachedTask`, and make it cooperate with
+  cancellation before applying results.
 
 ## ViewModel-to-ViewModel composition
 
@@ -437,9 +432,8 @@ owned resources with `addDispose` and let the framework invoke cleanup.
    `@MainActor`.
 10. Assuming `Task {}` created on `@MainActor` is background execution, or
     capturing a ViewModel/binding inside `Task.detached`.
-11. Starting a ViewModel-owned unstructured Task without registering
-    `task.cancel()` through `addDispose`, or ignoring cooperative cancellation
-    before publishing its result.
+11. Starting ViewModel-owned unstructured work outside `taskScope`, or ignoring
+    cooperative cancellation before publishing its result.
 12. Creating specs inside SwiftUI `body`; keep specs module-level so identity
     intent and test proxies remain stable.
 

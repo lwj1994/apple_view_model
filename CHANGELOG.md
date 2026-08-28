@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-28
+
+### Added
+
+- Add the lazy `ViewModel.taskScope`, with `task(...)` and
+  `detachedTask(...)` helpers for unstructured Tasks owned by a managed
+  ViewModel generation. Completed Tasks unregister automatically; normal
+  disposal, explicit `recycle`, and `ViewModel.reset()` cancel active Tasks.
+  `cancelAll()` supports data-source rebinding without disposing the ViewModel.
+
+### Changed
+
+- Document why AppleViewModel keeps lifecycle and state on `@MainActor`, and
+  how to isolate CPU-heavy work before applying its result on the main actor.
+
+### Fixed
+
+- Exclude the `UIViewController` documentation extension from watchOS builds,
+  where UIKit is importable but `UIViewController` is unavailable.
+
 ## [0.6.0] - 2026-08-02
 
 ### Added
