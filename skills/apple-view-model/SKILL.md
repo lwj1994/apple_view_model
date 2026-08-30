@@ -43,6 +43,10 @@ Use this skill when:
    update the owner, or `read(spec)` when lifecycle-bound access should not
    listen to the ViewModel's own notifications. Both APIs create/reuse, bind,
    and observe handle disposal, including force-recycle.
+   Never pass the resolved ViewModel instance to another view, controller,
+   coordinator, or ViewModel. Pass ordinary data or the spec and its identity
+   arguments; the receiving owner must resolve through its own binding so its
+   ownership and lifecycle are represented in the binding graph.
 3. Use `watchThrowing` / `readThrowing` with a spec `throwingBuilder` when the
    caller must recover from builder, cycle-validation, or reset-conflict errors.
    Ordinary `watch` / `read` intentionally remain fail-fast.

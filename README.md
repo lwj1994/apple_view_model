@@ -167,6 +167,7 @@ from that ViewModel; otherwise create it through `taskScope`.
 - Prefer managed instances over global singletons. A feature, service, repository, coordinator, or domain capability should normally use an unkeyed spec with `aliveForever: false`; the binding graph then owns creation and disposal.
 - Cached APIs are advanced, lookup-only escape hatches. They cannot create a missing instance and should not replace spec-based dependency resolution.
 - Resolve ViewModels through computed properties rather than `lazy var` or stored references. This lets the next access observe an explicit recycle or an asynchronous lifecycle change.
+- Never pass a resolved ViewModel instance between views, controllers, coordinators, or other ViewModels. Pass ordinary data or the spec and its identity arguments instead, then let each owner resolve the instance through its own binding. Passing the instance directly crosses the ViewModel's module boundary without establishing ownership, so the recipient can retain or use an object generation after AppleViewModel has disposed it.
 
 ## Installation
 
