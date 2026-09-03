@@ -27,7 +27,7 @@ Core idea: **anything can be a ViewModel** — business state, repositories, net
 - **Default UI integration**:
   - SwiftUI: `@WatchViewModel` / `@ReadViewModel` / typed `StateViewModelSelector` / compatibility `StateViewModelValueWatcher`. `ViewModel` is itself an `ObservableObject`.
   - UIKit: `NSObject.viewModelBinding` — works on `UIViewController`, `UIView`, or any `NSObject`. Associated-object lifetime auto-disposes the binding.
-- **Platforms**: iOS 16+; macOS 13+; tvOS 16+; watchOS 9+; visionOS 1+. UIKit files are guarded with `#if canImport(UIKit)`.
+- **Platforms**: iOS 16+; macOS 13+; tvOS 16+; watchOS 9+; visionOS 1+. Platform-specific UIKit and WatchKit code uses target-aware conditional compilation.
 - **Swift**: Requires Swift 6.0+, full language mode and strict concurrency. ViewModel, binding, lifecycle, and registry APIs are `@MainActor`; logging and error reporting remain safe to call from any actor.
 
 ### Version Compatibility

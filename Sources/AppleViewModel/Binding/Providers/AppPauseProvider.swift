@@ -1,11 +1,20 @@
-#if canImport(UIKit)
+#if os(watchOS)
+import WatchKit
+#elseif canImport(UIKit)
 import UIKit
+#endif
+
+#if os(watchOS) || canImport(UIKit)
 
 /// Pause provider driven by app foreground / background transitions.
 ///
-/// Subscribes to the UIKit scene notifications:
+/// On UIKit platforms, subscribes to the scene notifications:
 /// - `UIScene.willDeactivateNotification` → pause,
 /// - `UIScene.didActivateNotification` → resume.
+///
+/// On watchOS, subscribes to the WatchKit extension notifications:
+/// - `WKExtension.applicationWillResignActiveNotification` → pause,
+/// - `WKExtension.applicationDidBecomeActiveNotification` → resume.
 ///
 /// Mirrors the Dart `AppPauseProvider`, which listens to
 /// `AppLifecycleState.hidden` / `.resumed` instead.
@@ -16,8 +25,17 @@ public final class AppPauseProvider: BasePauseProvider {
     public override init() {
         super.init()
         let center = NotificationCenter.default
+
+#if os(watchOS)
+        let willDeactivateNotification = WKExtension.applicationWillResignActiveNotification
+        let didActivateNotification = WKExtension.applicationDidBecomeActiveNotification
+#else
+        let willDeactivateNotification = UIScene.willDeactivateNotification
+        let didActivateNotification = UIScene.didActivateNotification
+#endif
+
         let deactivated = center.addObserver(
-            forName: UIScene.willDeactivateNotification,
+            forName: willDeactivateNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -26,7 +44,7 @@ public final class AppPauseProvider: BasePauseProvider {
             }
         }
         let activated = center.addObserver(
-            forName: UIScene.didActivateNotification,
+            forName: didActivateNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in

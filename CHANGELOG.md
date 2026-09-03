@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-03
+
+### Fixed
+
+- Keep `AppPauseProvider` available on watchOS by observing WatchKit app
+  lifecycle notifications instead of the unavailable `UIScene` notifications.
+
 ## [0.7.0] - 2026-08-28
 
 ### Added
