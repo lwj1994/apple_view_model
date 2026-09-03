@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-03
+
+### Fixed
+
+- Restore Swift 6.0 and 6.1 compiler compatibility by replacing the
+  Swift 6.2-only `isolated deinit` syntax in `ViewModelTaskScope` while
+  preserving its final Task cancellation fallback.
+
 ## [0.7.1] - 2026-09-03
 
 ### Fixed

@@ -8,7 +8,11 @@ import Foundation
 /// applying results.
 @MainActor
 public final class ViewModelTaskScope {
-    private var cancellationHandlers: [UUID: () -> Void] = [:]
+    // All normal access stays on MainActor. The unsafe escape is limited to
+    // deinit, which runs after the last reference is released and performs the
+    // final cancellation fallback without requiring Swift 6.2 isolated deinit.
+    nonisolated(unsafe) private var cancellationHandlers:
+        [UUID: @Sendable () -> Void] = [:]
     private var isDisposed = false
 
     var activeTaskCount: Int { cancellationHandlers.count }
@@ -99,7 +103,10 @@ public final class ViewModelTaskScope {
         return task
     }
 
-    isolated deinit {
-        cancelAll()
+    deinit {
+        let handlers = Array(cancellationHandlers.values)
+        for cancel in handlers {
+            cancel()
+        }
     }
 }

@@ -38,6 +38,21 @@ final class ViewModelTaskTests: XCTestCase {
         XCTAssertTrue(task.isCancelled)
     }
 
+    func test_taskScope_cancels_task_when_scope_is_deinitialized() {
+        var scope: ViewModelTaskScope? = ViewModelTaskScope()
+        weak let weakScope = scope
+        let task = scope!.task {
+            try? await Task.sleep(for: .seconds(60))
+        }
+
+        XCTAssertFalse(task.isCancelled)
+
+        scope = nil
+
+        XCTAssertNil(weakScope)
+        XCTAssertTrue(task.isCancelled)
+    }
+
     func test_taskScope_cancels_mainActor_detached_and_throwing_tasks() {
         let binding = ViewModelBinding()
         let viewModel = binding.read(
