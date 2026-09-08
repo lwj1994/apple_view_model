@@ -22,7 +22,9 @@ final class InstanceHandle<Value: AnyObject> {
     private var directBindingSources: [String: NSObject] = [:]
 
     var bindingIds: [String] { Array(bindingSources.keys) }
-    var isDisposed: Bool { disposed }
+    /// A disposing generation is already unavailable for resolution/ownership,
+    /// even while its value remains accessible to internal teardown listeners.
+    var isDisposed: Bool { disposing || disposed }
 
     private struct ListenerEntry {
         let id: UUID
@@ -30,6 +32,7 @@ final class InstanceHandle<Value: AnyObject> {
     }
 
     private var listeners: [ListenerEntry] = []
+    private var disposing = false
     private var disposed = false
 
     init(
@@ -46,10 +49,10 @@ final class InstanceHandle<Value: AnyObject> {
         }
     }
 
-    /// Returns the underlying instance or throws if it has already been disposed.
+    /// Returns the underlying instance or throws once disposal has begun.
     func requireInstance() throws -> Value {
-        guard let v = value else {
-            throw ViewModelError("Cannot access \(Value.self) instance after disposal.")
+        guard !isDisposed, let v = value else {
+            throw ViewModelError("Cannot access \(Value.self) instance during or after disposal.")
         }
         return v
     }
@@ -60,7 +63,7 @@ final class InstanceHandle<Value: AnyObject> {
 
     /// Add the direct ownership source for a binding id.
     func bind(_ id: String?) {
-        guard let id, !disposed else { return }
+        guard let id, !isDisposed else { return }
         let source = directBindingSources[id] ?? NSObject()
         directBindingSources[id] = source
         bindFrom(id, source: source)
@@ -68,7 +71,7 @@ final class InstanceHandle<Value: AnyObject> {
 
     /// Add one identity-tracked ownership path for a visible binding id.
     func bindFrom(_ id: String?, source: AnyObject) {
-        guard let id, !disposed else { return }
+        guard let id, !isDisposed else { return }
         var sources = bindingSources[id] ?? []
         guard sources.insert(ObjectIdentifier(source)).inserted else { return }
         bindingSources[id] = sources
@@ -78,13 +81,14 @@ final class InstanceHandle<Value: AnyObject> {
     /// Remove a single reference. Auto-disposes when the list becomes empty, unless
     /// `aliveForever` is set.
     func unbind(_ id: String) {
-        guard let source = directBindingSources.removeValue(forKey: id) else { return }
+        guard !isDisposed,
+              let source = directBindingSources.removeValue(forKey: id) else { return }
         unbindFrom(id, source: source)
     }
 
     /// Remove one ownership path. Lifecycle unbind occurs after the last path leaves.
     func unbindFrom(_ id: String, source: AnyObject) {
-        guard !disposed, var sources = bindingSources[id] else { return }
+        guard !isDisposed, var sources = bindingSources[id] else { return }
         guard sources.remove(ObjectIdentifier(source)) != nil else { return }
         if !sources.isEmpty {
             bindingSources[id] = sources
@@ -99,6 +103,8 @@ final class InstanceHandle<Value: AnyObject> {
                     error, type: .lifecycle, context: "\(type(of: lifecycle)) onUnbind error")
             }
         }
+        // Ordinary unbind callbacks may acquire a new owner. Only begin
+        // disposal if ownership is still empty when the callback returns.
         if bindingSources.isEmpty {
             recycle()
         }
@@ -107,9 +113,15 @@ final class InstanceHandle<Value: AnyObject> {
     /// Force every reference off and dispose. Pass `force: true` to override
     /// `aliveForever` (used by `recycle(_:)` on a shared instance).
     func unbindAll(force: Bool = false) {
-        guard !disposed else { return }
+        guard !isDisposed else { return }
         if arg.aliveForever, !force { return }
-        for id in Array(bindingSources.keys) {
+        // Commit to disposal before user callbacks: onUnbind may synchronously
+        // recycle this same generation or attempt to attach another owner.
+        disposing = true
+        let ids = Array(bindingSources.keys)
+        bindingSources.removeAll()
+        directBindingSources.removeAll()
+        for id in ids {
             if let lifecycle = value as? InstanceLifeCycle {
                 do {
                     try runCatching { lifecycle.onUnbind(arg, bindingId: id) }
@@ -119,15 +131,14 @@ final class InstanceHandle<Value: AnyObject> {
                 }
             }
         }
-        bindingSources.removeAll()
-        directBindingSources.removeAll()
-        recycle(force: force)
+        finishDisposal()
     }
 
     /// Subscribe to this handle's disposal notification. Returns a cancellation closure.
     func addListener(
         _ listener: @escaping (InstanceHandle<Value>) throws -> Void
     ) -> () -> Void {
+        guard !isDisposed else { return {} }
         let id = UUID()
         listeners.append(ListenerEntry(id: id, callback: listener))
         return { [weak self] in
@@ -138,7 +149,15 @@ final class InstanceHandle<Value: AnyObject> {
     // MARK: - Internals
 
     private func recycle(force: Bool = false) {
+        guard !isDisposed else { return }
         if arg.aliveForever, !force { return }
+        disposing = true
+        finishDisposal()
+    }
+
+    /// Keep the value alive until listeners have removed registry/owner paths,
+    /// but reject recursive disposal and resolution throughout that fan-out.
+    private func finishDisposal() {
         runInViewModelUpdateTransaction(notifyListeners)
         onDispose()
     }
@@ -151,6 +170,7 @@ final class InstanceHandle<Value: AnyObject> {
         bindingSources.removeAll()
         directBindingSources.removeAll()
         listeners.removeAll()
+        disposing = false
     }
 
     private func notifyCreate(arg: InstanceArg) {
