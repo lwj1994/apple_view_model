@@ -23,10 +23,10 @@ public final class InstanceManager {
         if let cached = stores[id] as? Store<Value> {
             return cached
         }
-        // Deferred-bind the newly-created store into the closure so we can compare
-        // identities on cleanup without the "closure captures uninitialized value"
-        // warning.
-        var createdRef: Store<Value>?
+        // Deferred-bind the newly-created store so cleanup can compare identity.
+        // This reference must be weak: the store owns onStoreEmpty, whose
+        // captured local would otherwise retain the store even after eviction.
+        weak var createdRef: Store<Value>?
         let created = Store<Value>(onStoreEmpty: { [weak self] in
             guard let self, let created = createdRef else { return }
             // Only drop the bucket if the current store really is the one we made,

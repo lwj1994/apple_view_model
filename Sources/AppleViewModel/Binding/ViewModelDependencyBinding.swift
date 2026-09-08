@@ -9,7 +9,6 @@ final class ViewModelDependencyBinding: ViewModelBinding {
     }
 
     private weak var parent: ViewModel?
-    private let onDependencyUpdate: (ViewModel) -> Void
     private var propagatedOwners: [ViewModelBinding] = []
     private var dependencies: [ObjectIdentifier: DependencyEntry] = [:]
     private var removeOwnerListener: (() -> Void)?
@@ -19,11 +18,9 @@ final class ViewModelDependencyBinding: ViewModelBinding {
 
     init(
         parent: ViewModel,
-        parentHandler: ViewModelBindingHandler,
-        onDependencyUpdate: @escaping (ViewModel) -> Void
+        parentHandler: ViewModelBindingHandler
     ) {
         self.parent = parent
-        self.onDependencyUpdate = onDependencyUpdate
         super.init()
 
         propagatedOwners = parentHandler.constructionExternalOwners
@@ -31,11 +28,11 @@ final class ViewModelDependencyBinding: ViewModelBinding {
             attached: { [weak self] handle, viewModel in
                 try self?.handleAttached(handle, viewModel: viewModel)
             },
-            detached: { [weak self] handle, viewModel in
-                self?.handleDetached(handle, viewModel: viewModel)
+            detached: { [weak self] handle, _ in
+                self?.handleDetached(handle)
             },
-            updated: { [weak self] viewModel in
-                self?.onDependencyUpdate(viewModel)
+            updated: { [weak self] _ in
+                self?.onUpdate()
             }
         )
         registerViewModelConstructionRollback { [weak self] in self?.dispose() }
@@ -46,7 +43,15 @@ final class ViewModelDependencyBinding: ViewModelBinding {
     }
 
     public override func onUpdate() {
-        // Disposal is forwarded by the source-aware handle hooks.
+        guard
+            !dependencyDisposed,
+            !InstanceManager.shared.isResetting,
+            let parent,
+            !parent.isDisposed
+        else { return }
+        // This is notification forwarding, not a business callback. Bindings
+        // watching the parent request a refresh; read-only owners stay silent.
+        parent.notifyListeners()
     }
 
     public override func dispose() {
@@ -93,18 +98,10 @@ final class ViewModelDependencyBinding: ViewModelBinding {
         }
     }
 
-    private func handleDetached(_ handle: any _AnyHandle, viewModel: ViewModel) {
+    private func handleDetached(_ handle: any _AnyHandle) {
         dependencies.removeValue(forKey: ObjectIdentifier(handle))
-        notifyDependency(viewModel)
-    }
-
-    private func notifyDependency(_ viewModel: ViewModel) {
-        guard
-            !dependencyDisposed,
-            !InstanceManager.shared.isResetting,
-            markViewModelBindingUpdated(self)
-        else { return }
-        onDependencyUpdate(viewModel)
+        // The controller requests onUpdate after removing its handle tracking.
+        // Keep teardown separate so a refresh can safely resolve a new child.
     }
 
     private func requireAcyclicDependency(_ dependency: ViewModel) throws {

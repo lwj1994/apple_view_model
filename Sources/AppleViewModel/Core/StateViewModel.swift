@@ -36,13 +36,15 @@ open class StateViewModel<State>: ViewModel {
                 if let globalEquals = ViewModel.config.equals {
                     return globalEquals(prev, next)
                 }
-                // Fall back to reference identity when both values are class instances.
-                // For pure value types this amounts to "always different", matching the
-                // Dart default behavior of `identical()`.
-                if let a = prev as AnyObject?, let b = next as AnyObject? {
-                    return a === b
+                // Check dynamic types before casting: AnyObject also boxes value
+                // types (including Optional), and shared bridge objects can make
+                // unrelated value states appear reference-identical. Erasing to
+                // Any preserves the dynamic type of class-backed existentials.
+                guard Swift.type(of: prev as Any) is AnyClass,
+                      Swift.type(of: next as Any) is AnyClass else {
+                    return false
                 }
-                return false
+                return (prev as AnyObject) === (next as AnyObject)
             }
         }
         super.init()

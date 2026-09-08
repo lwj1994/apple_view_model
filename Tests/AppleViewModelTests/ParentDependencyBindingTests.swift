@@ -10,11 +10,15 @@ final class ParentDependencyBindingTests: XCTestCase {
 
     func test_sharedParent_propagatesOwnerChangesWithoutSwitchingChildGeneration() {
         let ownerA = ViewModelBinding()
+        let ownerB = ViewModelBinding()
+        defer {
+            ownerA.dispose()
+            ownerB.dispose()
+        }
         let parent = ownerA.read(pdParentSpec)
         let child = parent.child
         let dependencyBindingId = child.boundIds.first { $0 != ownerA.id }!
 
-        let ownerB = ViewModelBinding()
         XCTAssertTrue(ownerB.read(pdParentSpec) === parent)
         XCTAssertTrue(child.boundIds.contains(ownerB.id))
         XCTAssertTrue(parent.child === child)
@@ -36,6 +40,7 @@ final class ParentDependencyBindingTests: XCTestCase {
 
     func test_directAndParentPathsFromOneRoot_areReleasedIndependently() {
         let owner = ViewModelBinding()
+        defer { owner.dispose() }
         let directChild = owner.read(pdSharedChildSpec)
         let parent = owner.read(pdParentSpec)
         XCTAssertTrue(parent.sharedChild === directChild)
@@ -53,90 +58,223 @@ final class ParentDependencyBindingTests: XCTestCase {
 
     func test_rootCanGloballyRecycleChildOwnedOnlyThroughParent() {
         let owner = PDCountingBinding()
+        defer { owner.dispose() }
         let parent = owner.watch(pdParentSpec)
         let child = parent.child
+        var notifications = 0
+        let cancel = parent.listen { notifications += 1 }
+        defer { cancel() }
         owner.updates = 0
 
         owner.recycle(child)
 
         XCTAssertTrue(child.isDisposed)
-        XCTAssertEqual(parent.dependencyNotifications, 1)
+        XCTAssertEqual(notifications, 1)
         XCTAssertEqual(owner.updates, 1)
         XCTAssertFalse(parent.child === child)
-        owner.dispose()
     }
 
-    func test_readDoesNotBubbleAndWatchBubblesOnce() {
+    func test_readDoesNotForwardAndWatchRefreshesBindingOnce() {
         let owner = PDCountingBinding()
+        defer { owner.dispose() }
         let parent = owner.watch(pdParentSpec)
         let child = parent.child
+        var notifications = 0
+        let cancel = parent.listen { notifications += 1 }
+        defer { cancel() }
         owner.updates = 0
 
         child.emit()
-        XCTAssertEqual(parent.dependencyNotifications, 0)
+        XCTAssertEqual(notifications, 0)
         XCTAssertEqual(owner.updates, 0)
 
         XCTAssertTrue(parent.watchedChild === child)
         child.emit()
-        XCTAssertEqual(parent.dependencyNotifications, 1)
+        XCTAssertEqual(notifications, 1)
         XCTAssertEqual(owner.updates, 1)
-        owner.dispose()
+    }
+
+    func test_rootReadDoesNotSubscribeToWatchedChildNotifications() {
+        let owner = PDCountingBinding()
+        defer { owner.dispose() }
+        let parent = owner.read(pdParentSpec)
+        let child = parent.watchedChild
+        var notifications = 0
+        let cancel = parent.listen { notifications += 1 }
+        defer { cancel() }
+
+        child.emit()
+
+        XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(owner.updates, 0, "ownership alone must not subscribe a root")
     }
 
     func test_sharedParentOwnsOneWatchSubscriptionForAllRoots() {
         let ownerA = PDCountingBinding()
+        let ownerB = PDCountingBinding()
+        defer {
+            ownerA.dispose()
+            ownerB.dispose()
+        }
         let parent = ownerA.watch(pdParentSpec)
         let child = parent.watchedChild
-        let ownerB = PDCountingBinding()
         XCTAssertTrue(ownerB.watch(pdParentSpec) === parent)
+        var notifications = 0
+        let cancel = parent.listen { notifications += 1 }
+        defer { cancel() }
         ownerA.updates = 0
         ownerB.updates = 0
 
         child.emit()
 
-        XCTAssertEqual(parent.dependencyNotifications, 1)
+        XCTAssertEqual(notifications, 1)
         XCTAssertEqual(ownerA.updates, 1)
         XCTAssertEqual(ownerB.updates, 1)
+
         ownerA.dispose()
-        ownerB.dispose()
+        child.emit()
+        XCTAssertTrue(parent.watchedChild === child)
+        XCTAssertEqual(notifications, 2)
+        XCTAssertEqual(ownerA.updates, 1)
+        XCTAssertEqual(ownerB.updates, 2)
     }
 
     func test_diamondPropagation_updatesEachBindingOncePerTransaction() {
         let owner = PDCountingBinding()
+        defer { owner.dispose() }
         let root = owner.watch(pdDiamondRootSpec)
         let left = root.left
         let right = root.right
         let leaf = left.leaf
         XCTAssertTrue(right.leaf === leaf)
         XCTAssertTrue(owner.watch(pdDiamondLeafSpec) === leaf)
+        var leftNotifications = 0
+        var rightNotifications = 0
+        var rootNotifications = 0
+        let cancelLeft = left.listen { leftNotifications += 1 }
+        let cancelRight = right.listen { rightNotifications += 1 }
+        let cancelRoot = root.listen { rootNotifications += 1 }
+        defer {
+            cancelLeft()
+            cancelRight()
+            cancelRoot()
+        }
         owner.updates = 0
 
         leaf.emit()
 
-        XCTAssertEqual(left.dependencyNotifications, 1)
-        XCTAssertEqual(right.dependencyNotifications, 1)
-        XCTAssertEqual(root.dependencyNotifications, 1)
+        XCTAssertEqual(leftNotifications, 1)
+        XCTAssertEqual(rightNotifications, 1)
+        XCTAssertEqual(rootNotifications, 1)
         XCTAssertEqual(owner.updates, 1)
-        owner.dispose()
+    }
+
+    func test_businessReactionUsesExplicitChildListener() {
+        let owner = PDCountingBinding()
+        defer { owner.dispose() }
+        let parent = owner.watch(pdParentSpec)
+        parent.listenToChild()
+        let child = parent.child
+
+        child.emit()
+
+        XCTAssertEqual(parent.listenCallbacks, 1)
+        XCTAssertEqual(owner.updates, 0, "listen does not implicitly notify the parent")
+
+        XCTAssertTrue(parent.watchedChild === child)
+        child.emit()
+        XCTAssertEqual(parent.listenCallbacks, 2)
+        XCTAssertEqual(owner.updates, 1, "watch still forwards independently of business listeners")
+    }
+
+    func test_explicitListenerIsNotMigratedAfterChildRecycle() {
+        let owner = ViewModelBinding()
+        defer { owner.dispose() }
+        let parent = owner.read(pdParentSpec)
+        parent.listenToChild()
+        let child = parent.child
+        child.emit()
+        XCTAssertEqual(parent.listenCallbacks, 1)
+
+        owner.recycle(child)
+        let replacement = parent.child
+        XCTAssertFalse(replacement === child)
+        replacement.emit()
+        XCTAssertEqual(parent.listenCallbacks, 1)
+
+        parent.listenToChild()
+        replacement.emit()
+        XCTAssertEqual(parent.listenCallbacks, 2)
+    }
+
+    func test_explicitListenerIsRemovedWhenParentDisposesButSharedChildSurvives() {
+        let owner = ViewModelBinding()
+        defer { owner.dispose() }
+        let child = owner.read(pdSharedChildSpec)
+        let parent = owner.read(pdParentSpec)
+        var calls = 0
+        parent.viewModelBinding.listen(pdSharedChildSpec) { calls += 1 }
+        child.emit()
+        XCTAssertEqual(calls, 1)
+
+        owner.recycle(parent)
+        XCTAssertTrue(parent.isDisposed)
+        XCTAssertFalse(child.isDisposed)
+        child.emit()
+        XCTAssertEqual(calls, 1)
+    }
+
+    func test_dependencyPauseResumesWithOneForwardedRefresh() async {
+        let owner = PDCountingBinding()
+        let provider = BasePauseProvider()
+        defer {
+            owner.dispose()
+            provider.dispose()
+        }
+        let parent = owner.watch(pdParentSpec)
+        let child = parent.watchedChild
+        let dependencyBinding = parent.viewModelBinding
+        dependencyBinding.addPauseProvider(provider)
+        await yieldRunLoop()
+        provider.pause()
+        await yieldRunLoop()
+        XCTAssertTrue(dependencyBinding.isPaused)
+
+        child.emit()
+        child.emit()
+        XCTAssertEqual(owner.updates, 0)
+
+        provider.resume()
+        await yieldRunLoop()
+        XCTAssertFalse(dependencyBinding.isPaused)
+        XCTAssertEqual(owner.updates, 1)
     }
 
     func test_keyedAliveForeverChildRemainsReachableAfterParentDisposal() {
         let owner = ViewModelBinding()
+        let next = ViewModelBinding()
+        defer {
+            owner.dispose()
+            next.dispose()
+        }
         let parent = owner.read(pdParentSpec)
         let child = parent.aliveKeyedChild
         owner.dispose()
 
         XCTAssertTrue(parent.isDisposed)
         XCTAssertFalse(child.isDisposed)
-        let next = ViewModelBinding()
         XCTAssertTrue(next.read(pdAliveKeyedChildSpec) === child)
         next.recycle(child)
         XCTAssertTrue(child.isDisposed)
-        next.dispose()
     }
 
     func test_aliveForeverParentTransitivelyKeepsPrivateChildAlive() {
         let owner = ViewModelBinding()
+        let next = ViewModelBinding()
+        defer {
+            owner.dispose()
+            next.dispose()
+        }
         let parent = owner.read(pdAliveParentSpec)
         let child = parent.child
         owner.dispose()
@@ -144,13 +282,18 @@ final class ParentDependencyBindingTests: XCTestCase {
         XCTAssertFalse(parent.isDisposed)
         XCTAssertFalse(child.isDisposed)
 
-        let next = ViewModelBinding()
         XCTAssertTrue(next.read(pdAliveParentSpec) === parent)
         XCTAssertTrue(parent.child === child)
         next.recycle(parent)
         XCTAssertTrue(parent.isDisposed)
         XCTAssertTrue(child.isDisposed)
-        next.dispose()
+    }
+
+    private func yieldRunLoop() async {
+        for _ in 0..<3 {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+            await Task.yield()
+        }
     }
 }
 
@@ -183,7 +326,6 @@ private final class PDChildViewModel: ViewModel {
 
 @MainActor
 private final class PDParentViewModel: ViewModel {
-    var dependencyNotifications = 0
     var listenCallbacks = 0
 
     var child: PDChildViewModel { viewModelBinding.read(pdChildSpec) }
@@ -195,10 +337,6 @@ private final class PDParentViewModel: ViewModel {
         viewModelBinding.listen(pdChildSpec) { [weak self] in
             self?.listenCallbacks += 1
         }
-    }
-
-    override func onDependencyNotify(_ viewModel: ViewModel) {
-        dependencyNotifications += 1
     }
 }
 
@@ -225,12 +363,7 @@ private final class PDCountingBinding: ViewModelBinding {
 
 @MainActor
 private final class PDDiamondBranch: ViewModel {
-    var dependencyNotifications = 0
     var leaf: PDChildViewModel { viewModelBinding.watch(pdDiamondLeafSpec) }
-
-    override func onDependencyNotify(_ viewModel: ViewModel) {
-        dependencyNotifications += 1
-    }
 }
 
 @MainActor private let pdLeftBranchSpec = ViewModelSpec<PDDiamondBranch>(
@@ -242,13 +375,8 @@ private final class PDDiamondBranch: ViewModel {
 
 @MainActor
 private final class PDDiamondRoot: ViewModel {
-    var dependencyNotifications = 0
     var left: PDDiamondBranch { viewModelBinding.watch(pdLeftBranchSpec) }
     var right: PDDiamondBranch { viewModelBinding.watch(pdRightBranchSpec) }
-
-    override func onDependencyNotify(_ viewModel: ViewModel) {
-        dependencyNotifications += 1
-    }
 }
 
 @MainActor private let pdDiamondRootSpec = ViewModelSpec<PDDiamondRoot>(

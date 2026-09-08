@@ -279,16 +279,48 @@ final class CheckoutViewModel: ViewModel {
 ```
 
 - A resolver declaration creates nothing until accessed.
-- Use `read` to call a child without bubbling its own notifications.
-- Use `watch` when a child update should call
-  `parent.onDependencyNotify(child)` and then notify the parent.
+- `read` owns the child without forwarding its state notifications.
+- `watch` still forwards child notification → parent notification → refresh
+  request for bindings watching the parent. It is not an alias for `read`.
+  A root that only reads the parent does not subscribe merely by owning it.
+- There is no dependency-specific business hook. Do not override the removed
+  `onDependencyNotify` API; the internal `onDependencyUpdate` callback is also
+  removed. Use explicit `listen` / `listenState` / `listenStateSelect` for
+  business reactions, registered once in `onCreate` or another controlled
+  initialization path, never in a computed property.
+- Binding-owned `listen` uses `read`: the callback alone does not automatically
+  notify the parent. Use `update` / `setState` explicitly when it changes parent
+  state. A forwarded broad notification does not synthesize a parent state diff.
 - Every parent object generation lazily owns one stable dependency binding. It
   supplies a private child identity, keeps resolved children alive for at least
   the parent's lifetime, and mirrors current root owners in real time.
 - Ownership is source-aware. Direct and multiple parent paths sharing one
   visible binding id are released independently.
 - Synchronous propagation is transaction-based; each binding updates at most
-  once even in a diamond graph.
+  once even in a diamond graph. Keep business computations in explicit
+  dependency listeners rather than binding refresh callbacks.
+
+For example, register a business reaction to a stable child spec:
+
+```swift
+@MainActor
+final class CartAuditViewModel: ViewModel {
+    private(set) var changeCount = 0
+
+    override func onCreate(_ arg: InstanceArg) {
+        super.onCreate(arg)
+        viewModelBinding.listen(cartSpec) { [weak self] in
+            guard let self else { return }
+            self.update { self.changeCount += 1 }
+        }
+    }
+}
+```
+
+The binding removes that subscription when the child handle or the parent
+scope is disposed. Explicitly recycling the child does not migrate a business
+listener to its replacement; register again through a controlled setup path
+when following a new generation is required.
 
 ## Local scope: sharing one instance across pages
 
@@ -441,6 +473,8 @@ owned resources with `addDispose` and let the framework invoke cleanup.
     cooperative cancellation before publishing its result.
 12. Creating specs inside SwiftUI `body`; keep specs module-level so identity
     intent and test proxies remain stable.
+13. Overriding a removed dependency-notification hook, or assuming removing
+    that hook also removed `watch` notification forwarding and binding refresh.
 
 ## Tests and mocks
 

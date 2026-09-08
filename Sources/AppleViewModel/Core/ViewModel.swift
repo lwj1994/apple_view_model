@@ -176,6 +176,11 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     @_spi(Internal) public let refHandler = ViewModelBindingHandler()
 
     /// Stable dependency scope owned by this object generation.
+    ///
+    /// `watch` forwards child notifications through this ViewModel to bindings
+    /// watching it. `read` keeps ownership without that notification forwarding.
+    /// Register explicit `listen` / `listenState` / `listenStateSelect` callbacks
+    /// once during initialization for business reactions to a dependency.
     open var viewModelBinding: ViewModelBinding {
         precondition(
             !isDisposed,
@@ -184,10 +189,7 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
         if let dependencyBinding { return dependencyBinding }
         let created = ViewModelDependencyBinding(
             parent: self,
-            parentHandler: refHandler,
-            onDependencyUpdate: { [weak self] dependency in
-                self?.handleDependencyUpdate(dependency)
-            }
+            parentHandler: refHandler
         )
         dependencyBinding = created
         return created
@@ -245,15 +247,6 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
                 }
             }
         }
-    }
-
-    /// Called before a watched child update is forwarded through this ViewModel.
-    open func onDependencyNotify(_ viewModel: ViewModel) {}
-
-    private func handleDependencyUpdate(_ dependency: ViewModel) {
-        guard !isDisposed else { return }
-        onDependencyNotify(dependency)
-        notifyListeners()
     }
 
     /// Run `block` synchronously and notify exactly once after success.
