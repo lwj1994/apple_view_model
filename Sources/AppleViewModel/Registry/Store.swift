@@ -23,19 +23,21 @@ final class Store<Value: AnyObject> {
 
     var isEmpty: Bool { handles.isEmpty }
 
-    /// Every handle that carries the supplied tag, sorted most-recent-first.
+    /// Every resolvable handle carrying the tag, sorted most-recent-first.
     func instances(byTag tag: AnyHashable) -> [InstanceHandle<Value>] {
         guard !disposed else {
             // Returning an empty slice avoids a throw path on an already-discarded
             // manager; the caller that reached us here has nothing useful to do.
             return []
         }
+        // Forced disposal marks a handle unavailable before onUnbind callbacks
+        // run, but eviction follows later. Reentrant lookups must skip it.
         return handles.values
-            .filter { $0.arg.tag == tag }
+            .filter { !$0.isDisposed && $0.arg.tag == tag }
             .sorted { $0.index > $1.index }
     }
 
-    /// The highest-index handle that still matches the (optional) tag filter.
+    /// The highest-index resolvable handle matching the (optional) tag filter.
     func findNewlyInstance(tag: AnyHashable? = nil) throws -> InstanceHandle<Value>? {
         guard !disposed else {
             throw ViewModelError("Store<\(Value.self)> has been disposed.")
@@ -44,7 +46,9 @@ final class Store<Value: AnyObject> {
         if let tag {
             return instances(byTag: tag).first
         }
-        return handles.values.max(by: { $0.index < $1.index })
+        return handles.values.lazy
+            .filter { !$0.isDisposed }
+            .max(by: { $0.index < $1.index })
     }
 
     /// Get-or-create. Mirrors the Dart `getNotifier`:
