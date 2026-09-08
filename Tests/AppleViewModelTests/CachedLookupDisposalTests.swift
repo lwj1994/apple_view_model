@@ -133,12 +133,18 @@ final class CachedLookupDisposalTests: XCTestCase {
         var callbacks = 0
         newest.unbindAction = { _ in
             callbacks += 1
-            XCTAssertThrowsError(
-                try reader.readCached(tag: "shared") as CachedLookupDisposalViewModel
-            )
-            XCTAssertThrowsError(
-                try ViewModel.readCached(tag: "shared") as CachedLookupDisposalViewModel
-            )
+            do {
+                let _: CachedLookupDisposalViewModel = try reader.readCached(tag: "shared")
+                XCTFail("A tag with no live matches must not resolve through a binding")
+            } catch {
+                XCTAssertTrue(error is ViewModelError)
+            }
+            do {
+                let _: CachedLookupDisposalViewModel = try ViewModel.readCached(tag: "shared")
+                XCTFail("A tag with no live matches must not resolve through static lookup")
+            } catch {
+                XCTAssertTrue(error is ViewModelError)
+            }
             let maybeBound: CachedLookupDisposalViewModel? = reader.maybeReadCached(tag: "shared")
             let maybeUnbound: CachedLookupDisposalViewModel? = ViewModel.maybeReadCached(tag: "shared")
             XCTAssertNil(maybeBound)
