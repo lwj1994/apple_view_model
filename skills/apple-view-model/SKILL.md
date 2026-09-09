@@ -243,13 +243,17 @@ in a repeatedly evaluated resolver property.
 
 ## Response pattern for implementation requests
 
-- Default every normal resolution example to a stable spec plus `watch(spec)`
-  or `read(spec)`.
+- Default every normal resolution example to a stable spec, using SwiftUI
+  wrappers or binding `watch(spec)` / `read(spec)` as appropriate for the host.
 - In SwiftUI, use `@WatchViewModel` or `@ReadViewModel` directly. Configure
-  parameterized specs in the view initializer. The wrappers resolve on access
-  and manage binding ownership, observation, and disposal; no forwarding getter
-  or custom binding host is needed. For UIKit and ViewModel dependencies, use
-  computed resolver properties that call `viewModelBinding.watch/read(spec)`.
+  parameterized specs in the view initializer. Both wrappers already resolve
+  through their `wrappedValue` getter on every access and manage binding
+  ownership, observation, and disposal. Do not prescribe an additional getter
+  or custom binding host for either wrapper.
+- Ordinary binding `watch` / `read` calls return instances; assigning the result
+  to a stored property does not make it resolve again on access. For UIKit and
+  ViewModel dependencies, use computed resolver properties that call
+  `viewModelBinding.watch/read(spec)` instead of caching the resolved instance.
 - Preserve spec-based resolution in refactors and migrations. Never introduce a
   cached API merely because a key or tag is available.
 - Show cached lookup only when the user explicitly needs an already-created
@@ -413,7 +417,7 @@ See `examples/sharing_example.swift` for the complete example.
   path and force-disposes the managed object, including `aliveForever`.
 - There is no in-place replacement capability. Use a new explicit key for an
   independent instance. If global replacement is intentional, call `recycle`
-  and let getter-based `watch(spec)` / `read(spec)` create a new handle and
+  and let the SwiftUI wrapper or binding resolver create a new handle and
   dependency tree on the next access; do not migrate old relationships.
 - After `recycle`, access the SwiftUI wrapper or computed resolver property
   again; a separately stored reference points to the disposed generation.
