@@ -10,24 +10,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
-- 明确依赖通知与业务监听的职责：parent 内部 `watch(childSpec)` 仍通过
-  `parent.notifyListeners()` 转发 child 通知；`read` 不转发普通变化通知。
-  自定义业务逻辑通过 `listen` / `listenState` / `listenStateSelect` 注册。
+- Clarify dependency notification forwarding and business listeners: a parent's
+  `watch(childSpec)` still forwards child notifications through
+  `parent.notifyListeners()`, while `read` does not forward ordinary changes.
+  Register custom business logic with `listen`, `listenState`, or `listenStateSelect`.
 
 ### Fixed
 
-- 修复默认 state 引用相等判断把值类型桥接为 `AnyObject` 后误判相等的问题，
-  仅对实际 class 实例比较引用身份。
-- 在销毁回调执行前标记 handle 为不可用，防止重入回收、重复销毁及重新绑定
-  正在销毁的实例；普通解绑回调仍可通过新 owner 保活实例。
-- 缓存查询跳过正在销毁的 handle，避免在生命周期回调中返回不可用实例。
-- 修复 Store 清理闭包的循环引用，使移出 registry 的 Store 可以释放。
+- Fix false equality in the default state comparison caused by bridging value
+  types to `AnyObject`; reference identity is now checked only for class instances.
+- Mark handles unavailable before disposal callbacks run to prevent reentrant
+  recycling, duplicate disposal, and rebinding to instances being disposed.
+  Ordinary unbind callbacks can still keep an instance alive by adding a new owner.
+- Skip disposing handles in cached lookups so lifecycle callbacks cannot retrieve
+  unavailable instances.
+- Break the retain cycle in the Store cleanup closure so stores can be released
+  after removal from the registry.
 
 ### Removed
 
-- **破坏性变更**：移除供子类重写的 `ViewModel.onDependencyNotify(_:)` 钩子。
-  原有 override 中的业务逻辑需迁移到初始化阶段注册的 `listen*` 回调；
-  内部依赖通知转发继续保留，`listen*` 本身不会隐式通知 parent。
+- **Breaking change:** Remove the overridable `ViewModel.onDependencyNotify(_:)`
+  hook. Move business logic from existing overrides to `listen*` callbacks
+  registered during initialization. Internal dependency notification forwarding
+  remains in place; `listen*` callbacks do not implicitly notify the parent.
 
 ## [0.7.2] - 2026-09-03
 
