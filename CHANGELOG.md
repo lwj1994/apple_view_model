@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-09
+
+### Changed
+
+- 明确依赖通知与业务监听的职责：parent 内部 `watch(childSpec)` 仍通过
+  `parent.notifyListeners()` 转发 child 通知；`read` 不转发普通变化通知。
+  自定义业务逻辑通过 `listen` / `listenState` / `listenStateSelect` 注册。
+
+### Fixed
+
+- 修复默认 state 引用相等判断把值类型桥接为 `AnyObject` 后误判相等的问题，
+  仅对实际 class 实例比较引用身份。
+- 在销毁回调执行前标记 handle 为不可用，防止重入回收、重复销毁及重新绑定
+  正在销毁的实例；普通解绑回调仍可通过新 owner 保活实例。
+- 缓存查询跳过正在销毁的 handle，避免在生命周期回调中返回不可用实例。
+- 修复 Store 清理闭包的循环引用，使移出 registry 的 Store 可以释放。
+
+### Removed
+
+- **破坏性变更**：移除供子类重写的 `ViewModel.onDependencyNotify(_:)` 钩子。
+  原有 override 中的业务逻辑需迁移到初始化阶段注册的 `listen*` 回调；
+  内部依赖通知转发继续保留，`listen*` 本身不会隐式通知 parent。
+
 ## [0.7.2] - 2026-09-03
 
 ### Fixed
