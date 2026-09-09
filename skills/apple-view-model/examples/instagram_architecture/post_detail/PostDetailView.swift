@@ -5,15 +5,13 @@ struct PostDetailView: View {
     let postID: String
     let currentUserID: String
 
-    @WatchViewModel private var detailSource: PostDetailViewModel
-
-    private var detail: PostDetailViewModel { detailSource }
+    @WatchViewModel private var detail: PostDetailViewModel
     @State private var message = ""
 
     init(postID: String, currentUserID: String) {
         self.postID = postID
         self.currentUserID = currentUserID
-        _detailSource = WatchViewModel(postDetailViewModelSpec(postID, currentUserID))
+        _detail = WatchViewModel(postDetailViewModelSpec(postID, currentUserID))
     }
 
     var body: some View {

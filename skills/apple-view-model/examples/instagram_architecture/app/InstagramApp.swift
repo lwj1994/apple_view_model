@@ -17,13 +17,11 @@ struct InstagramArchitectureApp: App {
 struct InstagramRootView: View {
     let currentUserID: String
 
-    @WatchViewModel private var startupSource: InitViewModel
-
-    private var startup: InitViewModel { startupSource }
+    @WatchViewModel private var startup: InitViewModel
 
     init(currentUserID: String) {
         self.currentUserID = currentUserID
-        _startupSource = WatchViewModel(initViewModelSpec(currentUserID))
+        _startup = WatchViewModel(initViewModelSpec(currentUserID))
     }
 
     var body: some View {

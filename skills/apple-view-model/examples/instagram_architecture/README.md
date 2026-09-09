@@ -77,8 +77,7 @@ PostDetailView binding
   dependencies use `read`.
 - Every nested ViewModel is exposed through a computed resolver property. No
   dependency is stored in `lazy var` or another long-lived field.
-- SwiftUI 视图通过显式计算属性 getter 获取 VM，私有 `@WatchViewModel`
-  属性负责解析与整体刷新。Leaving a view
+- SwiftUI views use `@WatchViewModel` for broad state updates. Leaving a view
   releases its binding, then the parent generation releases its dependency
   subtree when no other owner remains.
 - All ViewModel work is main-actor isolated. Async API calls suspend without

@@ -245,10 +245,11 @@ in a repeatedly evaluated resolver property.
 
 - Default every normal resolution example to a stable spec plus `watch(spec)`
   or `read(spec)`.
-- 所有示例必须通过显式 getter 获取 VM，包括 SwiftUI、UIKit、VM 依赖和测试。
-  SwiftUI 用私有 `@WatchViewModel` / `@ReadViewModel` 属性承接解析与观察，
-  再通过计算属性 getter 访问；界面和业务代码统一使用 getter。
-  getter 每次访问解析入口，不用 stored property 或 `lazy var` 缓存 VM。
+- In SwiftUI, use `@WatchViewModel` or `@ReadViewModel` directly. Configure
+  parameterized specs in the view initializer. The wrappers resolve on access
+  and manage binding ownership, observation, and disposal; no forwarding getter
+  or custom binding host is needed. For UIKit and ViewModel dependencies, use
+  computed resolver properties that call `viewModelBinding.watch/read(spec)`.
 - Preserve spec-based resolution in refactors and migrations. Never introduce a
   cached API merely because a key or tag is available.
 - Show cached lookup only when the user explicitly needs an already-created
@@ -353,13 +354,11 @@ let draftViewModelSpec = ViewModelSpecWithArg<DraftViewModel, String>(
 
 struct PageA: View {
     let documentID: String
-    @WatchViewModel private var draftSource: DraftViewModel
-
-    private var draft: DraftViewModel { draftSource }
+    @WatchViewModel private var draft: DraftViewModel
 
     init(documentID: String) {
         self.documentID = documentID
-        _draftSource = WatchViewModel(draftViewModelSpec(documentID))
+        _draft = WatchViewModel(draftViewModelSpec(documentID))
     }
 
     var body: some View {
@@ -371,12 +370,10 @@ struct PageA: View {
 }
 
 struct PageB: View {
-    @WatchViewModel private var draftSource: DraftViewModel
-
-    private var draft: DraftViewModel { draftSource }
+    @WatchViewModel private var draft: DraftViewModel
 
     init(documentID: String) {
-        _draftSource = WatchViewModel(draftViewModelSpec(documentID))
+        _draft = WatchViewModel(draftViewModelSpec(documentID))
     }
 
     var body: some View {
@@ -418,8 +415,8 @@ See `examples/sharing_example.swift` for the complete example.
   independent instance. If global replacement is intentional, call `recycle`
   and let getter-based `watch(spec)` / `read(spec)` create a new handle and
   dependency tree on the next access; do not migrate old relationships.
-- Always re-resolve through a computed property after `recycle`; a stored
-  reference points to the disposed generation.
+- After `recycle`, access the SwiftUI wrapper or computed resolver property
+  again; a separately stored reference points to the disposed generation.
 - Recursive construction, runtime dependency cycles, and invalid nested
   `aliveForever` usage fail fast through `watch/read`, or throw through
   `watchThrowing/readThrowing`. Failed builders roll back the dependency scope
