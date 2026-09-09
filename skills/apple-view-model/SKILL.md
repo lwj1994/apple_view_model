@@ -188,8 +188,7 @@ arguments are intended to share.
 | UIKit / NSObject | computed property using `viewModelBinding.watch/read` | Associated binding follows the host. |
 | Plain Swift / tests | `ViewModelBinding()` | Caller must call `dispose()`. |
 
-Use a computed resolver property for UIKit/NSObject hosts when explicit global
-`recycle` is possible:
+Always use a computed resolver property for UIKit/NSObject hosts:
 
 ```swift
 @MainActor
@@ -246,6 +245,10 @@ in a repeatedly evaluated resolver property.
 
 - Default every normal resolution example to a stable spec plus `watch(spec)`
   or `read(spec)`.
+- 所有示例必须通过显式 getter 获取 VM，包括 SwiftUI、UIKit、VM 依赖和测试。
+  SwiftUI 用私有 `@WatchViewModel` / `@ReadViewModel` 属性承接解析与观察，
+  再通过计算属性 getter 访问；界面和业务代码统一使用 getter。
+  getter 每次访问解析入口，不用 stored property 或 `lazy var` 缓存 VM。
 - Preserve spec-based resolution in refactors and migrations. Never introduce a
   cached API merely because a key or tag is available.
 - Show cached lookup only when the user explicitly needs an already-created
@@ -283,9 +286,7 @@ final class CheckoutViewModel: ViewModel {
 - `watch` still forwards child notification → parent notification → refresh
   request for bindings watching the parent. It is not an alias for `read`.
   A root that only reads the parent does not subscribe merely by owning it.
-- There is no dependency-specific business hook. Do not override the removed
-  `onDependencyNotify` API; the internal `onDependencyUpdate` callback is also
-  removed. Use explicit `listen` / `listenState` / `listenStateSelect` for
+- Use explicit `listen` / `listenState` / `listenStateSelect` for
   business reactions, registered once in `onCreate` or another controlled
   initialization path, never in a computed property.
 - Binding-owned `listen` uses `read`: the callback alone does not automatically
@@ -352,11 +353,13 @@ let draftViewModelSpec = ViewModelSpecWithArg<DraftViewModel, String>(
 
 struct PageA: View {
     let documentID: String
-    @WatchViewModel private var draft: DraftViewModel
+    @WatchViewModel private var draftSource: DraftViewModel
+
+    private var draft: DraftViewModel { draftSource }
 
     init(documentID: String) {
         self.documentID = documentID
-        _draft = WatchViewModel(draftViewModelSpec(documentID))
+        _draftSource = WatchViewModel(draftViewModelSpec(documentID))
     }
 
     var body: some View {
@@ -368,10 +371,12 @@ struct PageA: View {
 }
 
 struct PageB: View {
-    @WatchViewModel private var draft: DraftViewModel
+    @WatchViewModel private var draftSource: DraftViewModel
+
+    private var draft: DraftViewModel { draftSource }
 
     init(documentID: String) {
-        _draft = WatchViewModel(draftViewModelSpec(documentID))
+        _draftSource = WatchViewModel(draftViewModelSpec(documentID))
     }
 
     var body: some View {
@@ -473,8 +478,7 @@ owned resources with `addDispose` and let the framework invoke cleanup.
     cooperative cancellation before publishing its result.
 12. Creating specs inside SwiftUI `body`; keep specs module-level so identity
     intent and test proxies remain stable.
-13. Overriding a removed dependency-notification hook, or assuming removing
-    that hook also removed `watch` notification forwarding and binding refresh.
+13. Assuming `watch` does not forward child notifications or refresh bindings.
 
 ## Tests and mocks
 
@@ -507,7 +511,7 @@ final class MyTests: XCTestCase {
         let binding = ViewModelBinding()
         defer { binding.dispose() }
 
-        let value = binding.read(featureSpec)
+        var value: FeatureViewModel { binding.read(featureSpec) }
         // assertions
         _ = value
     }

@@ -37,11 +37,13 @@ struct SharingExampleView: View {
 
 struct PageA: View {
     let documentID: String
-    @WatchViewModel private var draft: DraftViewModel
+    @WatchViewModel private var draftSource: DraftViewModel
+
+    private var draft: DraftViewModel { draftSource }
 
     init(documentID: String) {
         self.documentID = documentID
-        _draft = WatchViewModel(draftViewModelSpec(documentID))
+        _draftSource = WatchViewModel(draftViewModelSpec(documentID))
     }
 
     var body: some View {
@@ -57,10 +59,12 @@ struct PageA: View {
 }
 
 struct PageB: View {
-    @WatchViewModel private var draft: DraftViewModel
+    @WatchViewModel private var draftSource: DraftViewModel
+
+    private var draft: DraftViewModel { draftSource }
 
     init(documentID: String) {
-        _draft = WatchViewModel(draftViewModelSpec(documentID))
+        _draftSource = WatchViewModel(draftViewModelSpec(documentID))
     }
 
     var body: some View {

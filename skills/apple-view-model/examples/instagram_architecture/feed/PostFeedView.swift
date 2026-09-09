@@ -4,13 +4,17 @@ import SwiftUI
 struct PostFeedView: View {
     let userID: String
 
-    @WatchViewModel private var feed: PostFeedViewModel
-    @WatchViewModel private var currentUser: UserViewModel
+    @WatchViewModel private var feedSource: PostFeedViewModel
+
+    private var feed: PostFeedViewModel { feedSource }
+    @WatchViewModel private var currentUserSource: UserViewModel
+
+    private var currentUser: UserViewModel { currentUserSource }
 
     init(userID: String) {
         self.userID = userID
-        _feed = WatchViewModel(postFeedViewModelSpec(userID))
-        _currentUser = WatchViewModel(userViewModelSpec(userID))
+        _feedSource = WatchViewModel(postFeedViewModelSpec(userID))
+        _currentUserSource = WatchViewModel(userViewModelSpec(userID))
     }
 
     var body: some View {
