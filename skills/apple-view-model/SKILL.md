@@ -77,30 +77,59 @@ A key or tag on a spec does not change this order. Pass the keyed/tagged spec to
 
 ## Main-actor concurrency policy
 
-Treat `@MainActor` as a deliberate architecture boundary, not a limitation to
-remove during implementation or refactoring. ViewModel state, the binding
-graph, reference counts, notification delivery, and lifecycle transitions form
-one UI-facing state machine. Normal application state management does not need
-parallel mutation, and keeping that state machine single-threaded avoids locks,
-atomics, cross-actor synchronization, and unnecessary `Sendable` propagation.
-The resulting ordering is deterministic, application integration is simpler,
-and both the framework and consuming code are easier to maintain.
+`@MainActor` simplifies application state and interaction logic by serializing
+ViewModel state, the binding graph, reference counts, notifications, and lifecycle
+transitions in one isolation domain. This reduces locks, cross-actor synchronization,
+and `Sendable` plumbing. Preserve this architecture boundary; do not make ViewModels
+or bindings concurrently mutable to support background computation. Serialization
+does not make an entire async method atomic: after an `await`, check cancellation,
+request validity, and any relevant state changes.
 
-When work genuinely benefits from another executor:
+**Explicitly move expensive computation and blocking work off the main thread.**
+`@MainActor` does not mean all business work belongs there. A plain `Task {}` created
+in a MainActor-isolated context inherits MainActor; `taskScope.task` also runs on
+MainActor. They support asynchronous orchestration, not an automatic switch to a
+background executor. `Task {}` itself creates an unstructured task.
 
-- Keep ViewModel access and state mutation on `@MainActor`.
-- Copy the required input into immutable `Sendable` values before crossing the
-  actor boundary. Do not capture a ViewModel, binding, or mutable state object
-  in background work.
-- Use `Task.detached`, a dedicated actor, or a `nonisolated` service for
-  CPU-heavy or executor-bound work, then `await` its `Sendable` result and apply
-  that result on `@MainActor`. Put legacy blocking APIs on a dedicated thread or
-  queue instead of Swift's cooperative executor.
-- Remember that `Task {}` created from `@MainActor` inherits the main actor. It
-  is useful for structured asynchronous orchestration, but does not itself move
-  CPU work to a background executor.
-- Await ordinary asynchronous I/O directly when appropriate; actor suspension
-  does not block the main thread.
+Choose execution based on the workload:
+
+- **Independent CPU computation:** Prefer `taskScope.detachedTask`, whose cancellation
+  is managed by the ViewModel generation. The underlying API is `Task.detached`
+  (not `Task.detach`). Capture only immutable `Sendable` inputs and return `Sendable`
+  results; never capture a ViewModel, binding, or their mutable state. Expensive loops
+  should check cancellation. Raw detached tasks do not automatically inherit their
+  creator's cancellation and require explicit lifecycle management.
+- **Services with mutable background state:** Use a separate actor, perform computation
+  in its isolated methods, and `await` calls from MainActor. An actor is a serial
+  isolation domain, not one dedicated thread per actor. Default actors use the shared
+  cooperative thread pool and can be reentered across `await`; they do not provide
+  exclusive execution for an entire async workflow.
+- **Long-blocking synchronous I/O or legacy APIs:** Use a dedicated non-main
+  DispatchQueue or thread and bridge to async with a continuation or equivalent.
+  Wrapping blocking calls in `Task.detached` or a default actor still occupies the
+  cooperative thread pool; neither is a dedicated blocking-thread container. APIs
+  requiring fixed thread affinity need a dedicated thread, since a serial queue does
+  not guarantee a fixed thread.
+- **Native asynchronous I/O:** Usually `await` directly; suspension does not block the
+  main thread. Expensive synchronous parsing, decoding, or other processing afterward
+  still needs to move off MainActor.
+- **`nonisolated` does not mean background execution:** Synchronous methods do not
+  switch executors merely because they are nonisolated. In Swift 6.2, with
+  `NonisolatedNonsendingByDefault` enabled, plain `nonisolated async` methods can
+  retain the caller's isolation. Where supported, use `@concurrent` to explicitly run
+  async computation on the concurrent executor. Keep Swift 6.0-compatible examples
+  on `taskScope.detachedTask` or a separate actor. Even inside a detached task, calling
+  a `@MainActor` method returns execution to MainActor; check the isolation of the
+  expensive function itself.
+
+Once results return, check cancellation and request validity on MainActor before
+updating state. Executor selection and lifecycle management are separate concerns:
+when using an actor or `@concurrent`, still manage ViewModel-owned asynchronous
+orchestration through `taskScope.task`.
+
+References: [Apple's responsiveness guide](https://developer.apple.com/documentation/xcode/improving-app-responsiveness),
+[Actor execution model](https://developer.apple.com/documentation/swift/actor),
+and [Swift 6.2 concurrency changes](https://www.swift.org/blog/swift-6.2-released/).
 
 ## ViewModel-owned Task scope
 
