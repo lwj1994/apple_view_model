@@ -14,6 +14,7 @@ public final class ViewModelTaskScope {
     nonisolated(unsafe) private var cancellationHandlers:
         [UUID: @Sendable () -> Void] = [:]
     private var isDisposed = false
+    private var sequentialIOTail: Task<Void, Never>?
 
     var activeTaskCount: Int { cancellationHandlers.count }
 
@@ -50,30 +51,61 @@ public final class ViewModelTaskScope {
     /// main-actor-isolated mutable state.
     /// Defaults to `.userInitiated` (equivalent to `.high`); callers may override
     /// the priority. Cancellation is cooperative: the operation must check it.
+    /// With `sequential: true`, the operation waits for earlier sequential IO
+    /// tasks in this scope to finish, including across suspension points.
+    /// Nonsequential IO and main-actor Tasks are independent of this sequence.
+    /// `cancelAll()` starts a fresh sequence; cancelled work may still be running.
     @discardableResult
     public func io<Success: Sendable>(
         priority: TaskPriority? = .userInitiated,
+        sequential: Bool = false,
         operation: @escaping @Sendable () async -> Success
     ) -> Task<Success, Never> {
-        track(Task.detached(priority: priority, operation: operation))
+        let predecessor = sequential ? sequentialIOTail : nil
+        let task = Task.detached(priority: priority) {
+            if let predecessor {
+                await predecessor.value
+            }
+            return await operation()
+        }
+        if sequential {
+            sequentialIOTail = Task { _ = await task.value }
+        }
+        return track(task)
     }
 
-    /// Throwing counterpart of `io(priority:operation:)`.
+    /// Throwing counterpart of `io(priority:sequential:operation:)`.
+    /// A predecessor's error does not prevent subsequent sequential work.
     @discardableResult
     public func io<Success: Sendable>(
         priority: TaskPriority? = .userInitiated,
+        sequential: Bool = false,
         operation: @escaping @Sendable () async throws -> Success
     ) -> Task<Success, any Error> {
-        track(Task.detached(priority: priority, operation: operation))
+        let predecessor = sequential ? sequentialIOTail : nil
+        let task = Task.detached(priority: priority) {
+            if let predecessor {
+                await predecessor.value
+            }
+            return try await operation()
+        }
+        if sequential {
+            sequentialIOTail = Task { _ = await task.result }
+        }
+        return track(task)
     }
 
     /// Cancels every active Task and clears the scope for reuse.
     ///
     /// This is useful when rebinding a data source while keeping the same
     /// ViewModel generation alive. New Tasks may be created afterward.
+    /// New sequential IO tasks do not wait for cancelled work. Previously queued
+    /// tasks keep their existing ordering and must still cooperate with cancellation.
     public func cancelAll() {
         let handlers = Array(cancellationHandlers.values)
         cancellationHandlers.removeAll()
+        // Detach the old sequence before cancelling; new work gets a fresh tail.
+        sequentialIOTail = nil
         for cancel in handlers {
             cancel()
         }

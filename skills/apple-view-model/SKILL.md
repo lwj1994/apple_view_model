@@ -150,10 +150,19 @@ whose result or side effects belong to one ViewModel generation.
   application. `io(...)` is the preferred background worker, defaults
   to `.userInitiated`, and accepts
   only `Sendable` captures/results; never capture a ViewModel or binding there.
+- Pass `sequential: true` to `io(...)` to wait for earlier sequential `io` tasks
+  in the same scope. Ordinary `io` calls, `task` calls, and other scopes do not
+  join that sequence. The default is `false`. A cancelled or throwing predecessor
+  releases the next task once its result is complete.
+  Do not await a new sequential task from within a sequential task in the same
+  scope; the tasks would wait for each other indefinitely.
 - Both APIs return the Task handle. Completed Tasks unregister automatically,
   preventing finished handles from accumulating in long-lived ViewModels.
 - `cancelAll()` cancels current work without disposing the scope, so the same
   ViewModel can start fresh listeners after a data-source or session rebind.
+  It also resets the IO sequence: new sequential calls do not wait for old work.
+  Old tasks retain their ordering and may overlap with new work if they ignore
+  cancellation; resetting the sequence does not forcibly interrupt them.
 
 ```swift
 taskScope.task { [weak self] in
@@ -595,8 +604,8 @@ the newest non-draft, non-prerelease tag. Prefer
 fall back to the Releases page when `gh` is unavailable. Never infer the version
 from the default branch, a stale README example, or local tags.
 
-At the time this skill was authored, the latest stable release is `0.9.0`:
+At the time this skill was updated, the latest stable release is `0.10.0`:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.9.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.10.0")
 ```

@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-11
+
+### Added
+
+- Add `sequential: true` to `taskScope.io` for ordered execution within one
+  `ViewModelTaskScope`. Only sequential IO tasks join the sequence; ordinary
+  IO tasks, main-actor Tasks, and independent scopes remain concurrent.
+- Reset the sequential IO tail in `cancelAll()` so fresh work does not wait
+  for previously cancelled tasks. Existing tasks still cancel cooperatively.
+- Add tests using explicit async gates for scope independence, default
+  concurrency, mixed sequential/concurrent calls, and sequence reuse after
+  cancellation, plus coverage for predecessor failures and cancellation.
+
 ## [0.9.0] - 2026-09-11
 
 ### Changed

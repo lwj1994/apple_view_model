@@ -127,8 +127,19 @@ temporarily keeps the disposed ViewModel object in memory.
 | API | Execution | Use case |
 |---|---|---|
 | `taskScope.task(...)` | `@MainActor` | Async I/O, stream/listener loops, and applying results to ViewModel state. |
-| `taskScope.io(...)` | Nonisolated; defaults to `.userInitiated` | Preferred for background computation and async work using only `Sendable` inputs/outputs; never capture a ViewModel or binding. |
+| `taskScope.io(...)` | Nonisolated; defaults to `.userInitiated` | Preferred for background computation and async work using only `Sendable` inputs/outputs; pass `sequential: true` to wait for earlier sequential `io` tasks in the same scope. |
 | `taskScope.cancelAll()` | `@MainActor` | Cancel current work during data-source/session rebinding while keeping the same scope reusable. |
+
+Only `io(sequential: true)` calls participate in a scope's sequence; the next
+operation starts after the preceding sequential operation finishes, even when
+it suspends or throws. Ordinary `io` calls, `task` calls, and other scopes run
+independently. `sequential` defaults to `false`.
+Do not await a new sequential task from within an earlier sequential task in
+the same scope: the new task waits for the current one to finish, creating a cycle.
+
+`cancelAll()` cancels current work and resets the sequence. New sequential calls
+do not wait for old work to finish. Old tasks keep their existing ordering and
+may overlap with the new sequence if they do not respond to cancellation.
 
 Both creation APIs return the Task handle. Nonthrowing detached operations use
 `await task.value`; throwing operations use `try await task.value`. Cancelling
@@ -208,7 +219,7 @@ from that ViewModel; otherwise create it through `taskScope`.
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.9.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.10.0")
 ```
 
 Add `"AppleViewModel"` to your target dependencies.
