@@ -91,9 +91,17 @@ in a MainActor-isolated context inherits MainActor; `taskScope.task` also runs o
 MainActor. They support asynchronous orchestration, not an automatic switch to a
 background executor. `Task {}` itself creates an unstructured task.
 
+Prefer `taskScope.io` for background computation and nonisolated async
+work. It wraps `Task.detached` and accepts an async `@Sendable` closure; it
+does not dispatch to a separate blocking-I/O queue. It defaults to `.userInitiated` (equivalent to `.high`), the highest
+nondeprecated named Swift Task priority; callers may override `priority`. Keep
+long-running or high-volume blocking synchronous I/O on a non-main queue or
+dedicated thread. Brief blocking calls may be acceptable; do not assume the
+Swift pool creates replacement threads when blocked.
+
 Choose execution based on the workload:
 
-- **Independent CPU computation:** Prefer `taskScope.detachedTask`, whose cancellation
+- **Independent CPU computation:** Prefer `taskScope.io`, whose cancellation
   is managed by the ViewModel generation. The underlying API is `Task.detached`
   (not `Task.detach`). Capture only immutable `Sendable` inputs and return `Sendable`
   results; never capture a ViewModel, binding, or their mutable state. Expensive loops
@@ -118,7 +126,7 @@ Choose execution based on the workload:
   `NonisolatedNonsendingByDefault` enabled, plain `nonisolated async` methods can
   retain the caller's isolation. Where supported, use `@concurrent` to explicitly run
   async computation on the concurrent executor. Keep Swift 6.0-compatible examples
-  on `taskScope.detachedTask` or a separate actor. Even inside a detached task, calling
+  on `taskScope.io` or a separate actor. Even inside a detached task, calling
   a `@MainActor` method returns execution to MainActor; check the isolation of the
   expensive function itself.
 
@@ -139,7 +147,8 @@ whose result or side effects belong to one ViewModel generation.
 - One `ViewModelTaskScope` is owned by each object generation. It is disposed
   synchronously from `ViewModel.onDispose`, not inferred from object `deinit`.
 - `task(...)` creates a main-actor Task for async I/O, listener loops, and state
-  application. `detachedTask(...)` creates a nonisolated CPU worker and accepts
+  application. `io(...)` is the preferred background worker, defaults
+  to `.userInitiated`, and accepts
   only `Sendable` captures/results; never capture a ViewModel or binding there.
 - Both APIs return the Task handle. Completed Tasks unregister automatically,
   preventing finished handles from accumulating in long-lived ViewModels.
@@ -153,6 +162,28 @@ taskScope.task { [weak self] in
     self?.setState(result)
 }
 ```
+
+For background computation, capture Sendable input and apply results on MainActor:
+
+```swift
+let worker = taskScope.io {
+    try Task.checkCancellation()
+    let total = values.reduce(0, +)
+    try Task.checkCancellation()
+    return total
+}
+taskScope.task { [weak self] in
+    let total = try await worker.value
+    try Task.checkCancellation()
+    self?.setState(total) // Assuming State is Int.
+}
+```
+
+Nonthrowing operations use `await worker.value`; throwing operations use
+`try await worker.value`. Scope cancellation signals the worker but does not
+forcibly stop it or automatically discard its result. Check cancellation during
+long computations and before publishing results. Awaiting `.value` alone does
+not propagate the waiting Task's cancellation to the worker.
 
 Lifecycle rules:
 
@@ -296,7 +327,7 @@ in a repeatedly evaluated resolver property.
   execution, isolate only its `Sendable` workload and return the result to the
   ViewModel instead of making ViewModel or binding state concurrent.
 - Bind every ViewModel-owned unstructured Task with
-  `taskScope.task` / `taskScope.detachedTask`, and make it cooperate with
+  `taskScope.task` / `taskScope.io`, and make it cooperate with
   cancellation before applying results.
 
 ## ViewModel-to-ViewModel composition
@@ -564,8 +595,8 @@ the newest non-draft, non-prerelease tag. Prefer
 fall back to the Releases page when `gh` is unavailable. Never infer the version
 from the default branch, a stale README example, or local tags.
 
-At the time this skill was authored, the latest stable release is `0.7.0`:
+At the time this skill was authored, the latest stable release is `0.9.0`:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.7.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.9.0")
 ```

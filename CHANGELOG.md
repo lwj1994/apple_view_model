@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-11
+
+### Changed
+
+- Rename `taskScope.detachedTask` to `taskScope.io` (source-breaking), retaining
+  the `Task.detached` implementation and throwing/nonthrowing async overloads.
+- Default both `taskScope.io` overloads to `.userInitiated` (equivalent to `.high`),
+  while preserving explicit priority overrides. Prefer this helper for background
+  computation and nonisolated async work in documentation.
+- Clarify SwiftUI wrapper usage and computed binding resolvers in README and
+  skill examples.
+
+### Added
+
+- Add tests for background execution, default priority, error propagation,
+  and cooperative cancellation of running `taskScope.io` work on ViewModel disposal.
+
 ## [0.8.0] - 2026-09-09
 
 ### Changed

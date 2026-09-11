@@ -43,23 +43,25 @@ public final class ViewModelTaskScope {
 
     /// Creates a nonisolated Task owned by the ViewModel generation.
     ///
-    /// Use this only for CPU-heavy or executor-bound work that should leave
+    /// Prefer this for CPU-heavy or background async work that should leave
     /// `@MainActor` and can cooperate with Swift concurrency. Run legacy
     /// blocking APIs on a dedicated thread or queue instead. The `@Sendable`
     /// operation must not capture the ViewModel, its binding, or other
     /// main-actor-isolated mutable state.
+    /// Defaults to `.userInitiated` (equivalent to `.high`); callers may override
+    /// the priority. Cancellation is cooperative: the operation must check it.
     @discardableResult
-    public func detachedTask<Success: Sendable>(
-        priority: TaskPriority? = nil,
+    public func io<Success: Sendable>(
+        priority: TaskPriority? = .userInitiated,
         operation: @escaping @Sendable () async -> Success
     ) -> Task<Success, Never> {
         track(Task.detached(priority: priority, operation: operation))
     }
 
-    /// Throwing counterpart of `detachedTask(priority:operation:)`.
+    /// Throwing counterpart of `io(priority:operation:)`.
     @discardableResult
-    public func detachedTask<Success: Sendable>(
-        priority: TaskPriority? = nil,
+    public func io<Success: Sendable>(
+        priority: TaskPriority? = .userInitiated,
         operation: @escaping @Sendable () async throws -> Success
     ) -> Task<Success, any Error> {
         track(Task.detached(priority: priority, operation: operation))

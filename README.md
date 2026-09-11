@@ -50,10 +50,17 @@ MainActor to update state. A plain `Task {}` created in a MainActor-isolated
 context inherits MainActor, and `taskScope.task` also runs there. Both support
 asynchronous orchestration but do not themselves move work to the background.
 Adding `async` / `await` alone does not move synchronous computation either.
+Prefer `taskScope.io` for background computation and nonisolated async
+work. It wraps `Task.detached` and accepts an async `@Sendable` closure; it
+does not dispatch to a separate blocking-I/O queue. Its default priority is `.userInitiated` (equivalent to `.high`), the highest
+nondeprecated named Swift Task priority. Pass a different `priority` when needed.
+For long-running or high-volume synchronous blocking I/O, use a non-main
+DispatchQueue or dedicated thread. A brief blocking call may be acceptable,
+but do not rely on the Swift pool creating replacement threads when blocked.
 
 | Workload | Execution approach |
 | --- | --- |
-| Independent CPU-heavy computation, such as large-data parsing or statistics | Prefer `taskScope.detachedTask`, backed by `Task.detached`, with immutable `Sendable` inputs and results. |
+| Independent CPU-heavy computation, such as large-data parsing or statistics | Prefer `taskScope.io`, backed by `Task.detached`, with immutable `Sendable` inputs and results. |
 | A service that maintains mutable background state | Use a separate actor, perform work in its isolated methods, and `await` the result. |
 | Long-blocking synchronous I/O or legacy APIs | Use a dedicated non-main queue or thread and bridge to async with a continuation or equivalent, avoiding the cooperative thread pool. |
 | Native asynchronous I/O, such as network requests | Usually `await` directly. Suspension does not block the main thread, but expensive synchronous processing afterward still needs to leave MainActor. |
@@ -70,7 +77,7 @@ do not switch executors merely because they are nonisolated. In Swift 6.2, with
 `NonisolatedNonsendingByDefault` enabled, plain `nonisolated async` methods can
 retain the caller's isolation. Supported toolchains can use `@concurrent` to
 explicitly run async computation on the concurrent executor; this library's
-Swift 6.0-compatible examples use `taskScope.detachedTask`. Even inside a detached
+Swift 6.0-compatible examples use `taskScope.io`. Even inside a detached
 task, calling a `@MainActor` method returns execution to MainActor. See the
 [Swift 6.2 concurrency changes](https://www.swift.org/blog/swift-6.2-released/).
 
@@ -90,7 +97,7 @@ final class StatisticsViewModel: StateViewModel<StatisticsState> {
     init() { super.init(state: StatisticsState()) }
 
     func recalculate(values: [Int]) {
-        let worker = taskScope.detachedTask(priority: .userInitiated) {
+        let worker = taskScope.io {
             values.reduce(0, +)
         }
 
@@ -120,11 +127,16 @@ temporarily keeps the disposed ViewModel object in memory.
 | API | Execution | Use case |
 |---|---|---|
 | `taskScope.task(...)` | `@MainActor` | Async I/O, stream/listener loops, and applying results to ViewModel state. |
-| `taskScope.detachedTask(...)` | Nonisolated | CPU-heavy work using only `Sendable` inputs/outputs; never capture a ViewModel or binding. |
+| `taskScope.io(...)` | Nonisolated; defaults to `.userInitiated` | Preferred for background computation and async work using only `Sendable` inputs/outputs; never capture a ViewModel or binding. |
 | `taskScope.cancelAll()` | `@MainActor` | Cancel current work during data-source/session rebinding while keeping the same scope reusable. |
 
-Both creation APIs return the Task handle. A completed Task automatically
-removes its cancellation entry, so a long-lived ViewModel does not accumulate
+Both creation APIs return the Task handle. Nonthrowing detached operations use
+`await task.value`; throwing operations use `try await task.value`. Cancelling
+the scope signals cancellation but does not forcibly stop the operation or
+automatically discard its result. Check cancellation inside long-running work
+and before applying results on MainActor.
+
+A completed Task automatically removes its cancellation entry, so a long-lived ViewModel does not accumulate
 finished handles.
 
 ```swift
@@ -196,7 +208,7 @@ from that ViewModel; otherwise create it through `taskScope`.
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.7.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.9.0")
 ```
 
 Add `"AppleViewModel"` to your target dependencies.
