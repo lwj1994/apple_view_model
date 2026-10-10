@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-10
+
 Aligns the resolution-cache, cached-query, and listener contracts with
 [Flutter `view_model` PR #82](https://github.com/lwj1994/flutter_view_model/pull/82)
 at commit [`c49171884eaa82b15888104ba7283f9bd422435b`](https://github.com/lwj1994/flutter_view_model/commit/c49171884eaa82b15888104ba7283f9bd422435b).
