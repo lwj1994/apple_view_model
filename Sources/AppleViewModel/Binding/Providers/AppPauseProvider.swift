@@ -20,7 +20,10 @@ import UIKit
 /// `AppLifecycleState.hidden` / `.resumed` instead.
 @MainActor
 public final class AppPauseProvider: BasePauseProvider {
-    private var observers: [NSObjectProtocol] = []
+    // Mutated on MainActor; deinit is the only nonisolated reader, once this
+    // provider has no remaining owners. NotificationCenter removal is safe
+    // from that final-release thread.
+    nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
 
     public override init() {
         super.init()
@@ -60,6 +63,14 @@ public final class AppPauseProvider: BasePauseProvider {
         for observer in observers { center.removeObserver(observer) }
         observers.removeAll()
         super.dispose()
+    }
+
+    deinit {
+        // A provider can be shared by several bindings. Their controllers only
+        // cancel their own subscriptions; the provider releases its app-wide
+        // observer tokens when its final owner goes away.
+        let center = NotificationCenter.default
+        for observer in observers { center.removeObserver(observer) }
     }
 }
 #endif

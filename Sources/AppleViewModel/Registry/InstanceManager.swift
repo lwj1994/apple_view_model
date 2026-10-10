@@ -15,6 +15,34 @@ public final class InstanceManager {
     private var stores: [ObjectIdentifier: AnyObject] = [:]
     private(set) var isResetting = false
 
+    #if DEBUG
+    /// Reference tags retain their identity until reset, so recycled object
+    /// addresses cannot accidentally suppress a later object's warning.
+    /// Value tags have no stable object identity; compare their values instead.
+    /// Neither path invokes a tag's `hash(into:)` just to deduplicate logging.
+    private struct TagLookupWarnings {
+        var objects: [ObjectIdentifier: AnyObject] = [:]
+        var values: [AnyHashable] = []
+
+        mutating func insert(_ tag: AnyHashable) -> Bool {
+            let base = tag.base
+            if Swift.type(of: base) is AnyClass {
+                let object = base as AnyObject
+                return objects.updateValue(object, forKey: ObjectIdentifier(object)) == nil
+            }
+            guard !values.contains(tag) else { return false }
+            values.append(tag)
+            return true
+        }
+    }
+
+    private var ambiguousTagLookupWarnings: [ObjectIdentifier: TagLookupWarnings] = [:]
+
+    /// Internal sink for deterministic diagnostic tests. Production output uses
+    /// the same logger and configuration as other framework diagnostics.
+    var debugTagLookupWarningHandler: (String) -> Void = { viewModelLog($0) }
+    #endif
+
     private init() {}
 
     /// Return the typed store for `Value`, lazily creating it.
@@ -106,6 +134,11 @@ public final class InstanceManager {
             guard let found = try store.findNewlyInstance(tag: tag) else {
                 throw ViewModelError("no \(type) instance found")
             }
+            #if DEBUG
+            if let tag {
+                warnAmbiguousTagLookup(type, tag: tag, store: store)
+            }
+            #endif
             if let bindingId {
                 // Re-wrap so that `Store.getHandle` sees the bindingId and calls
                 // `bind` exactly like the key-based lookup path does.
@@ -144,12 +177,38 @@ public final class InstanceManager {
         guard !isResetting else { return }
         isResetting = true
         defer { isResetting = false }
+        #if DEBUG
+        ambiguousTagLookupWarnings.removeAll()
+        debugTagLookupWarningHandler = { viewModelLog($0) }
+        #endif
         let snapshot = stores
         stores.removeAll()
         for case let store as any _StoreDisposable in snapshot.values {
             store._disposeNow()
         }
     }
+
+    #if DEBUG
+    /// Tag equality still controls matching; identity is only a diagnostic
+    /// deduplication rule. Untagged latest lookups are supported and never warn.
+    private func warnAmbiguousTagLookup<Value: AnyObject>(
+        _ type: Value.Type,
+        tag: AnyHashable,
+        store: Store<Value>
+    ) {
+        guard ViewModel.config.isLoggingEnabled else { return }
+        let matches = store.countInstances(tag: tag)
+        guard matches > 1,
+              ambiguousTagLookupWarnings[ObjectIdentifier(type), default: TagLookupWarnings()]
+                .insert(tag) else { return }
+        debugTagLookupWarningHandler(
+            "AppleViewModel warning: a single-result cached lookup of \(type) by tag "
+                + "\(tag) matched \(matches) instances and returned the most recently "
+                + "created one. Use readCachesByTag/watchCachesByTag for a shared "
+                + "tag, or an explicit key for one instance."
+        )
+    }
+    #endif
 
     private func requireNotResetting() throws {
         if isResetting {

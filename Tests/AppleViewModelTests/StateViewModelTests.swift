@@ -14,7 +14,7 @@ final class StateViewModelTests: XCTestCase {
         let vm = binding.read(
             ViewModelSpec<CounterStateViewModel> { CounterStateViewModel() }
         )
-        var received: [(CounterState?, CounterState)] = []
+        var received: [(CounterState, CounterState)] = []
         _ = vm.listenState { prev, curr in
             received.append((prev, curr))
         }
@@ -26,9 +26,9 @@ final class StateViewModelTests: XCTestCase {
         // holds the state that was current just before — on the very first
         // inc it is the initial state (count=0), not nil.
         XCTAssertEqual(received.count, 2)
-        XCTAssertEqual(received[0].0?.count, 0)
+        XCTAssertEqual(received[0].0.count, 0)
         XCTAssertEqual(received[0].1.count, 1)
-        XCTAssertEqual(received[1].0?.count, 1)
+        XCTAssertEqual(received[1].0.count, 1)
         XCTAssertEqual(received[1].1.count, 2)
     }
 

@@ -2,27 +2,56 @@
 import SwiftUI
 import Combine
 
+@MainActor
+private func makeStateSelectorEquals<Selected: Equatable>(
+    _ equals: ((Selected, Selected) -> Bool)?
+) -> (Selected, Selected) -> Bool {
+    if let equals { return equals }
+    let globalEquals = ViewModel.config.equals
+    return { previous, current in
+        if let globalEquals {
+            return globalEquals(previous, current)
+        }
+        return previous == current
+    }
+}
+
 /// Strongly typed fine-grained selector for one selected value.
 ///
 /// Equality resolution matches `listenStateSelect`: local `equals`, then the
 /// global `ViewModelConfig.equals`, then `Equatable`. Use a small `Equatable`
 /// struct when several fields should form one update boundary.
+/// Non-Equatable selected values are supported with an explicit `equals`.
 @MainActor
-public struct StateViewModelSelector<State, Selected: Equatable, Content: View>: View {
+public struct StateViewModelSelector<State, Selected, Content: View>: View {
     private let viewModel: StateViewModel<State>
     private let selector: (State) -> Selected
-    private let equals: ((Selected, Selected) -> Bool)?
+    private let resolveEquals: () -> (Selected, Selected) -> Bool
     private let content: (Selected) -> Content
+
+    public init(
+        viewModel: StateViewModel<State>,
+        selector: @escaping (State) -> Selected,
+        equals: @escaping (Selected, Selected) -> Bool,
+        @ViewBuilder content: @escaping (Selected) -> Content
+    ) {
+        self.viewModel = viewModel
+        self.selector = selector
+        self.resolveEquals = { equals }
+        self.content = content
+    }
 
     public init(
         viewModel: StateViewModel<State>,
         selector: @escaping (State) -> Selected,
         equals: ((Selected, Selected) -> Bool)? = nil,
         @ViewBuilder content: @escaping (Selected) -> Content
-    ) {
+    ) where Selected: Equatable {
         self.viewModel = viewModel
         self.selector = selector
-        self.equals = equals
+        // Resolve the current global fallback on every body evaluation, as the
+        // existing host did when applying the latest parent configuration.
+        self.resolveEquals = { makeStateSelectorEquals(equals) }
         self.content = content
     }
 
@@ -30,7 +59,7 @@ public struct StateViewModelSelector<State, Selected: Equatable, Content: View>:
         _StateViewModelSelectorInner(
             viewModel: viewModel,
             selector: selector,
-            equals: equals,
+            equals: resolveEquals(),
             content: content
         )
         // A recycled VM is a new generation even when the surrounding SwiftUI
@@ -41,17 +70,17 @@ public struct StateViewModelSelector<State, Selected: Equatable, Content: View>:
 }
 
 @MainActor
-private struct _StateViewModelSelectorInner<State, Selected: Equatable, Content: View>: View {
+private struct _StateViewModelSelectorInner<State, Selected, Content: View>: View {
     let viewModel: StateViewModel<State>
     let selector: (State) -> Selected
-    let equals: ((Selected, Selected) -> Bool)?
+    let equals: (Selected, Selected) -> Bool
     let content: (Selected) -> Content
     @StateObject private var host: _StateViewModelSelectorHost<State, Selected>
 
     init(
         viewModel: StateViewModel<State>,
         selector: @escaping (State) -> Selected,
-        equals: ((Selected, Selected) -> Bool)?,
+        equals: @escaping (Selected, Selected) -> Bool,
         content: @escaping (Selected) -> Content
     ) {
         self.viewModel = viewModel
@@ -75,23 +104,43 @@ private struct _StateViewModelSelectorInner<State, Selected: Equatable, Content:
 }
 
 @MainActor
-final class _StateViewModelSelectorHost<State, Selected: Equatable>: ObservableObject {
+final class _StateViewModelSelectorHost<State, Selected>: ObservableObject {
     private(set) var selected: Selected
     private var viewModel: StateViewModel<State>
     private var selector: (State) -> Selected
     private var selectedEquals: (Selected, Selected) -> Bool
     nonisolated(unsafe) private var disposer: (() -> Void)? = nil
 
-    init(
+    private init(
         viewModel: StateViewModel<State>,
         selector: @escaping (State) -> Selected,
-        equals: ((Selected, Selected) -> Bool)?
+        resolvedEquals: @escaping (Selected, Selected) -> Bool
     ) {
         self.viewModel = viewModel
         self.selector = selector
-        self.selectedEquals = Self.makeEquals(equals)
+        self.selectedEquals = resolvedEquals
         selected = selector(viewModel.state)
         subscribe()
+    }
+
+    convenience init(
+        viewModel: StateViewModel<State>,
+        selector: @escaping (State) -> Selected,
+        equals: @escaping (Selected, Selected) -> Bool
+    ) {
+        self.init(viewModel: viewModel, selector: selector, resolvedEquals: equals)
+    }
+
+    convenience init(
+        viewModel: StateViewModel<State>,
+        selector: @escaping (State) -> Selected,
+        equals: ((Selected, Selected) -> Bool)?
+    ) where Selected: Equatable {
+        self.init(
+            viewModel: viewModel,
+            selector: selector,
+            resolvedEquals: makeStateSelectorEquals(equals)
+        )
     }
 
     /// Mirrors Flutter's `didUpdateWidget`: every parent render refreshes the
@@ -101,7 +150,28 @@ final class _StateViewModelSelectorHost<State, Selected: Equatable>: ObservableO
     func update(
         viewModel: StateViewModel<State>,
         selector: @escaping (State) -> Selected,
+        equals: @escaping (Selected, Selected) -> Bool
+    ) -> Selected {
+        applyConfiguration(viewModel: viewModel, selector: selector, resolvedEquals: equals)
+    }
+
+    @discardableResult
+    func update(
+        viewModel: StateViewModel<State>,
+        selector: @escaping (State) -> Selected,
         equals: ((Selected, Selected) -> Bool)?
+    ) -> Selected where Selected: Equatable {
+        applyConfiguration(
+            viewModel: viewModel,
+            selector: selector,
+            resolvedEquals: makeStateSelectorEquals(equals)
+        )
+    }
+
+    private func applyConfiguration(
+        viewModel: StateViewModel<State>,
+        selector: @escaping (State) -> Selected,
+        resolvedEquals: @escaping (Selected, Selected) -> Bool
     ) -> Selected {
         let generationChanged = self.viewModel !== viewModel
         if generationChanged {
@@ -111,7 +181,7 @@ final class _StateViewModelSelectorHost<State, Selected: Equatable>: ObservableO
         }
 
         self.selector = selector
-        selectedEquals = Self.makeEquals(equals)
+        selectedEquals = resolvedEquals
         selected = selector(viewModel.state)
 
         if generationChanged {
@@ -132,19 +202,6 @@ final class _StateViewModelSelectorHost<State, Selected: Equatable>: ObservableO
         guard !selectedEquals(previousSelected, currentSelected) else { return }
         objectWillChange.send()
         selected = currentSelected
-    }
-
-    private static func makeEquals(
-        _ equals: ((Selected, Selected) -> Bool)?
-    ) -> (Selected, Selected) -> Bool {
-        if let equals { return equals }
-        let globalEquals = ViewModel.config.equals
-        return { previous, current in
-            if let globalEquals {
-                return globalEquals(previous, current)
-            }
-            return previous == current
-        }
     }
 
     deinit {

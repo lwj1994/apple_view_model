@@ -42,13 +42,30 @@ final class Store<Value: AnyObject> {
         guard !disposed else {
             throw ViewModelError("Store<\(Value.self)> has been disposed.")
         }
-        if handles.isEmpty { return nil }
-        if let tag {
-            return instances(byTag: tag).first
+        // Single-result lookups need only the highest creation index, not the
+        // sorted batch. Scan each live handle once; recycling the newest then
+        // naturally reveals the next one without maintaining another cache.
+        var newest: InstanceHandle<Value>?
+        for handle in handles.values {
+            guard !handle.isDisposed else { continue }
+            if let tag, handle.arg.tag != tag { continue }
+            if let current = newest, current.index >= handle.index { continue }
+            newest = handle
         }
-        return handles.values.lazy
-            .filter { !$0.isDisposed }
-            .max(by: { $0.index < $1.index })
+        return newest
+    }
+
+    /// Number of resolvable cached handles, optionally filtered by tag.
+    /// A disposing handle is already unavailable even before cache eviction.
+    func countInstances(tag: AnyHashable? = nil) -> Int {
+        guard !disposed else { return 0 }
+        var count = 0
+        for handle in handles.values {
+            guard !handle.isDisposed else { continue }
+            if let tag, handle.arg.tag != tag { continue }
+            count += 1
+        }
+        return count
     }
 
     /// Get-or-create. Mirrors the Dart `getNotifier`:
@@ -104,11 +121,14 @@ final class Store<Value: AnyObject> {
                         + "and was not cached."
                 )
             }
-            defer { nextIndex += 1 }
+            // Reserve the index before onCreate/onBind can synchronously
+            // construct another instance of this type with a different key.
+            let creationIndex = nextIndex
+            nextIndex += 1
             return InstanceHandle<Value>(
                 value: instance,
                 arg: arg,
-                index: nextIndex
+                index: creationIndex
             )
         }
         if disposed {

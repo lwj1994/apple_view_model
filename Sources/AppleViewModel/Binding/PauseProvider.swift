@@ -31,7 +31,7 @@ open class BasePauseProvider: ViewModelBindingPauseProvider {
 
     public var pauseStateChanges: AsyncStream<Bool> {
         AsyncStream<Bool> { [weak self] continuation in
-            guard let self else {
+            guard let self, !self.disposed else {
                 continuation.finish()
                 return
             }

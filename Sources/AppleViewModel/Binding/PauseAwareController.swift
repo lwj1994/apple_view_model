@@ -60,9 +60,15 @@ public final class PauseAwareController {
     private func subscribe(_ slot: ProviderSlot) {
         let stream = slot.provider.pauseStateChanges
         let id = slot.id
-        slot.task = Task { @MainActor [weak self] in
+        slot.task = Task { @MainActor [weak self, weak slot] in
             for await shouldPause in stream {
-                guard let self, !self.disposed else { return }
+                // Cancellation cannot retract an element whose next() has
+                // already resumed. Check the exact subscription, not just the
+                // provider id: removing and re-adding a shared provider creates
+                // a new slot that must ignore events from its previous task.
+                guard let self, !self.disposed,
+                      let slot, !Task.isCancelled,
+                      self.providers.contains(where: { $0 === slot }) else { return }
                 self.providerStates[id] = shouldPause
                 self.reevaluate()
             }

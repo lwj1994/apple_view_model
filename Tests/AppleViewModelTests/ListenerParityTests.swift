@@ -133,23 +133,23 @@ final class ListenerParityTests: XCTestCase {
         var transitions: [(Int, Int)] = []
         var observerTransitions: [(Int, Int)] = []
         _ = viewModel.listenState { previous, current in
-            transitions.append((previous?.count ?? -1, current.count))
+            transitions.append((previous.count, current.count))
             if current.count == 1 {
                 viewModel.set(count: 2)
             }
         }
         _ = viewModel.listenState { previous, current in
-            observerTransitions.append((previous?.count ?? -1, current.count))
+            observerTransitions.append((previous.count, current.count))
         }
 
         viewModel.set(count: 1)
 
         XCTAssertEqual(transitions.map(\.0), [0, 1])
         XCTAssertEqual(transitions.map(\.1), [1, 2])
-        // The nested transition completes first. The second observer must then
-        // receive the frozen outer event rather than mutable global state.
-        XCTAssertEqual(observerTransitions.map(\.0), [1, 0])
-        XCTAssertEqual(observerTransitions.map(\.1), [2, 1])
+        // A nested update changes state immediately but queues its event. Every
+        // observer receives the frozen outer transition before the nested one.
+        XCTAssertEqual(observerTransitions.map(\.0), [0, 1])
+        XCTAssertEqual(observerTransitions.map(\.1), [1, 2])
         XCTAssertEqual(viewModel.previousState?.count, 1)
         XCTAssertEqual(viewModel.state.count, 2)
     }

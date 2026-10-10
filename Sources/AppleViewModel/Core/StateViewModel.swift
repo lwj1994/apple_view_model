@@ -15,6 +15,8 @@ import Foundation
 @MainActor
 open class StateViewModel<State>: ViewModel {
     public private(set) var state: State
+    /// The last replaced state, or `nil` before the first transition. Listener
+    /// callbacks already have a previous value and therefore use `State` itself.
     public private(set) var previousState: State?
     public let initialState: State
 
@@ -25,6 +27,12 @@ open class StateViewModel<State>: ViewModel {
 
     private let equalsFn: (State, State) -> Bool
     private var stateListeners: [StateListenerEntry] = []
+    private var stateListenerIDs: Set<UUID> = []
+    // Two stacks form a FIFO queue. Removing the next ready event releases its
+    // states after delivery, without retaining every event in a long cascade.
+    private var pendingStateEvents: [(previous: State, current: State)] = []
+    private var readyStateEvents: [(previous: State, current: State)] = []
+    private var isDispatchingStateEvents = false
 
     public init(state: State, equals: ((State, State) -> Bool)? = nil) {
         self.state = state
@@ -50,17 +58,17 @@ open class StateViewModel<State>: ViewModel {
         super.init()
     }
 
-    /// Subscribe to raw state changes; callback receives `(previous, current)`.
+    /// Subscribe to actual transitions; callback receives `(previous, current)`.
+    /// Registration does not emit an initial event. Both values have type
+    /// `State`, which permits `nil` only when `State` itself is optional.
     @discardableResult
     public func listenState(
-        onChanged: @escaping (State?, State) throws -> Void
+        onChanged: @escaping (State, State) throws -> Void
     ) -> () -> Void {
-        _listenStateTransition { previous, current in
-            try onChanged(previous, current)
-        }
+        _listenStateTransition(onChanged: onChanged)
     }
 
-    /// Internal non-optional state transition stream used by selector hosts.
+    /// Internal raw state transition stream used by selector hosts.
     ///
     /// Keeping the transition raw lets long-lived SwiftUI `@StateObject` hosts
     /// apply their latest selector configuration without replacing the
@@ -74,18 +82,22 @@ open class StateViewModel<State>: ViewModel {
             id: id,
             callback: onChanged
         ))
+        stateListenerIDs.insert(id)
         return { [weak self] in
-            self?.stateListeners.removeAll { $0.id == id }
+            guard let self else { return }
+            self.stateListenerIDs.remove(id)
+            self.stateListeners.removeAll { $0.id == id }
         }
     }
 
     /// Subscribe to the output of a selector. Equality resolution is local
     /// `equals` → global `ViewModelConfig.equals` → Swift `Equatable`.
+    /// Both callback values have type `R`, without an extra Optional wrapper.
     @discardableResult
     public func listenStateSelect<R: Equatable>(
         selector: @escaping (State) -> R,
         equals: ((R, R) -> Bool)? = nil,
-        onChanged: @escaping (R?, R) throws -> Void
+        onChanged: @escaping (R, R) throws -> Void
     ) -> () -> Void {
         let globalEquals = ViewModel.config.equals
         let effectiveEquals: (R, R) -> Bool = equals ?? { previous, current in
@@ -94,10 +106,34 @@ open class StateViewModel<State>: ViewModel {
             }
             return previous == current
         }
+        return listenSelectedState(
+            selector: selector,
+            equals: effectiveEquals,
+            onChanged: onChanged
+        )
+    }
+
+    /// Subscribe to any selected type with an explicit comparison rule.
+    /// The selected value does not need to conform to `Equatable` when its
+    /// equality is provided by the caller.
+    @discardableResult
+    public func listenStateSelect<R>(
+        selector: @escaping (State) -> R,
+        equals: @escaping (R, R) -> Bool,
+        onChanged: @escaping (R, R) throws -> Void
+    ) -> () -> Void {
+        listenSelectedState(selector: selector, equals: equals, onChanged: onChanged)
+    }
+
+    private func listenSelectedState<R>(
+        selector: @escaping (State) -> R,
+        equals: @escaping (R, R) -> Bool,
+        onChanged: @escaping (R, R) throws -> Void
+    ) -> () -> Void {
         let wrapped: (State, State) throws -> Void = { prevState, currState in
             let prevSel = selector(prevState)
             let currSel = selector(currState)
-            if !effectiveEquals(prevSel, currSel) {
+            if !equals(prevSel, currSel) {
                 try onChanged(prevSel, currSel)
             }
         }
@@ -113,25 +149,47 @@ open class StateViewModel<State>: ViewModel {
         }
         if equalsFn(state, newState) { return }
         let previous = state
-        let current = newState
         previousState = previous
         state = newState
-        // Phase 1: state listeners receive (previous, current).
-        let snapshot = stateListeners
-        for entry in snapshot {
-            guard stateListeners.contains(where: { $0.id == entry.id }) else { continue }
-            do {
-                try entry.callback(previous, current)
-            } catch {
-                reportViewModelError(
-                    error, type: .listener, context: "stateListener error")
+        pendingStateEvents.append((previous, newState))
+        guard !isDispatchingStateEvents else { return }
+        isDispatchingStateEvents = true
+        defer {
+            isDispatchingStateEvents = false
+            pendingStateEvents.removeAll(keepingCapacity: true)
+            readyStateEvents.removeAll(keepingCapacity: true)
+        }
+
+        // Reentrant setState changes the value immediately, but its event waits
+        // until every remaining listener has received the current transition.
+        // Reverse each incoming batch once, then pop ready events in O(1).
+        runInViewModelUpdateTransaction {
+            while (!readyStateEvents.isEmpty || !pendingStateEvents.isEmpty), !isDisposed {
+                if readyStateEvents.isEmpty {
+                    pendingStateEvents.reverse()
+                    swap(&readyStateEvents, &pendingStateEvents)
+                }
+                let event = readyStateEvents.removeLast()
+                let snapshot = stateListeners
+                for entry in snapshot {
+                    if isDisposed { break }
+                    guard stateListenerIDs.contains(entry.id) else { continue }
+                    do {
+                        try entry.callback(event.previous, event.current)
+                    } catch {
+                        reportViewModelError(
+                            error, type: .listener, context: "stateListener error")
+                    }
+                }
+                if !isDisposed { notifyListeners() }
             }
         }
-        // Phase 2: general listeners fan out.
-        notifyListeners()
     }
 
     open override func dispose() {
+        pendingStateEvents.removeAll()
+        readyStateEvents.removeAll()
+        stateListenerIDs.removeAll()
         stateListeners.removeAll()
         super.dispose()
     }

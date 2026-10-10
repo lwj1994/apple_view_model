@@ -123,6 +123,8 @@ as polling, `for await` listeners, refresh requests, or background calculations.
 The scope is pure Swift and is disposed from `ViewModel.onDispose`; it does not
 wait for object `deinit`, so cancellation still happens when another reference
 temporarily keeps the disposed ViewModel object in memory.
+Tasks started during construction are also cancelled if the initializer or
+builder throws before the ViewModel can enter the registry.
 
 | API | Execution | Use case |
 |---|---|---|
@@ -303,6 +305,29 @@ Normal `watch` / `read` remain fail-fast for source compatibility.
 
 Identity is the resolved ViewModel type plus its effective key. An unkeyed spec receives a private key from the resolving binding, so the same type is reused within that binding and isolated from other bindings. Use an explicit `key` only for intentional cross-binding sharing or multiple instances of the same type in one binding. `tag` is a grouping/lookup label and does not participate in identity. A key does not retain an instance; `aliveForever` only skips automatic disposal when its owner set becomes empty.
 
+**The spec object, builder, and constructor arguments are not part of identity.**
+Two different unkeyed specs for the same ViewModel type resolve to the same
+instance within one binding. Calling an unkeyed argument spec with different
+arguments does the same thing: the later builder does not run.
+
+```swift
+let firstUserSpec = ViewModelSpec<UserViewModel> { UserViewModel(userId: "A") }
+let secondUserSpec = ViewModelSpec<UserViewModel> { UserViewModel(userId: "B") }
+
+binding.read(firstUserSpec)   // Creates UserViewModel(userId: "A").
+binding.read(secondUserSpec)  // Reuses that instance; does not build user B.
+```
+
+When an argument distinguishes instances, include it in the spec's key, as in
+the parameterized `userSpec` above.
+
+| Resolution pattern | Instance behavior |
+| --- | --- |
+| Same type, same binding, no explicit key | One instance, even with different specs or arguments. |
+| Same type, different bindings, no explicit key | Separate instances. |
+| Same type, equal explicit keys | Shared across bindings while the instance is alive. |
+| Different types, equal explicit keys | Separate instances. |
+
 ### 3. ViewModelBinding — the container
 
 Any scope that uses VMs holds a binding — it is the DI container for that scope.
@@ -375,7 +400,7 @@ final class OrderViewModel: ViewModel {
 
 Modules A, B, C develop independently, each exporting their own specs. Getter declarations create nothing until accessed. Reference counting handles disposal: a child cannot die before a parent generation that owns it, but it can outlive that parent when another direct or parent path still owns it.
 
-A keyed parent can be shared by several roots. When roots join or leave, its already-resolved children keep the same identity and receive source-aware owner updates. A root may own the same keyed child both directly and through one or more parents; releasing one path cannot remove the others. Synchronous notification propagation is transaction-based, so a diamond graph refreshes each binding at most once.
+A keyed parent can be shared by several roots. When roots join or leave, its already-resolved children keep the same identity and receive source-aware owner updates. A root may own the same keyed child both directly and through one or more parents; releasing one path cannot remove the others. Synchronous notification propagation is transaction-based, so a diamond graph refreshes each root binding at most once. Dependency notifications continue through every path: a parent business listener can receive both intermediate and final derived values as separate notifications.
 
 Unkeyed identity is the resolved ViewModel type plus the current binding's private default key: repeated resolution of the same type reuses one instance within that binding, while different bindings remain isolated. Add an explicit key for cross-binding sharing or multiple instances of the same type in one binding. Every `aliveForever` spec must have an explicit key, whether resolved by a root binding or another ViewModel; a missing or computed-nil key fails fast before the builder runs, and the Store enforces the same invariant for internal factories.
 
@@ -395,6 +420,15 @@ Choose `watch` when ViewModel notifications should update the owner. Choose
 Use `watchThrowing` / `readThrowing` when builder failures, dependency-cycle
 validation, or reset conflicts must be handled as recoverable errors; ordinary
 `watch` / `read` intentionally fail fast for those failures.
+
+Repeated spec resolution reuses a cached handle when the binding already owns
+that handle directly, avoiding another registry lookup and duplicate ownership
+registration. The explicit-key requirement for `aliveForever` is checked on
+every call. A `watch` after a `read` still attaches its notification subscription,
+and repeated `watch` calls do not duplicate it.
+Unbind, recycle, handle disposal, binding disposal, and `ViewModel.reset()`
+invalidate the relevant cached handles so the next resolution follows the
+current ownership and instance generation.
 
 ### Advanced: cached lookup
 
@@ -421,10 +455,81 @@ ambiguous when several instances share a tag. The source-compatible non-throwing
 non-`ViewModelError` failures must be preserved. If the caller has a spec—even a
 keyed or tagged spec—use `watch(spec)` / `read(spec)` instead.
 
-`listen`, `listenState`, and `listenStateSelect` use `read` internally and automatically remove their side-effect subscriptions when the binding disposes. Do not put a `listen` call in a repeatedly evaluated resolver property.
+Without either `key` or `tag`, a single-result cached lookup returns the most
+recently created instance of the requested type still available in the shared
+cache. This applies to the binding's read/watch/maybe variants and the static
+`ViewModel.readCached` / `ViewModel.maybeReadCached` APIs. "Newest" means creation
+order, not last access: reading an older instance does not make it newest.
+Creating an instance or recycling the newest one can change the next result.
+This behavior is supported and does not emit a deprecation warning.
+
+A single-result tag query also returns the newest matching instance. In debug
+builds with `ViewModel.config.isLoggingEnabled` enabled, multiple matches emit
+an ambiguity warning; lookup still compares tags by equality and returns the
+same result. Warnings are deduplicated per ViewModel type and tag: class-backed
+tags use object identity, while Swift value tags use equality. Warning
+bookkeeping does not call the tag's hash function, and reset
+clears the warning history. A single match, an untagged lookup, an exact key
+hit, or a tag-batch query does not emit this warning. Use an explicit key when
+querying a specific cached instance, or a tag-batch API when all matches are
+needed. If both key and tag are supplied, an exact key hit takes precedence;
+only a missing key falls back to the tag query.
+
+### Side-effect listeners
+
+`listen`, `listenState`, and `listenStateSelect` use `read` internally and
+automatically remove their side-effect subscriptions when the binding disposes
+or explicitly unbinds that ViewModel.
+Register them once for the relevant owner lifetime; do not put a `listen` call
+in a repeatedly evaluated resolver property.
+
+State callbacks only run for accepted state transitions, so the replaced state
+is always available. Registration does not dispatch an initial callback.
+
+Reentrant updates are delivered in FIFO order. If a listener handling `0 → 1`
+sets state to `2`, the remaining listeners receive `0 → 1` before listeners
+receive `1 → 2`. The state itself changes immediately, so `vm.state` may already
+be newer than the callback's `current` value; use the callback's arguments when
+reacting to that specific transition. The synchronous dispatch runs in one
+update transaction that coalesces root refresh requests. Disposing the ViewModel
+stops delivery and discards any queued transitions.
+
+| API | Callback type |
+| --- | --- |
+| `listenState` | `(State, State) throws -> Void` — previous and current state |
+| `listenStateSelect` | `(R, R) throws -> Void` — previous and current selected value |
+
+```swift
+binding.listenState(counterSpec) { previous, current in
+    print("Count changed from \(previous.count) to \(current.count)")
+}
+
+binding.listenStateSelect(counterSpec, selector: { $0.count }) { previous, current in
+    print("Selected count changed from \(previous) to \(current)")
+}
+```
+
+Selected values use local `equals`, then global `ViewModelConfig.equals`, then
+their `Equatable` implementation. A selected type without `Equatable`
+conformance is supported when an explicit typed `equals` closure is supplied;
+this applies to both ViewModel and binding listener APIs.
+
+`State` or the selected `R` may itself be Optional. For example, callbacks for
+`StateViewModel<String?>` receive `(String?, String?)`, and either value can be
+`nil`. The separate `previousState` property remains `State?`, since it has no
+previous transition to describe immediately after initialization.
+
+**Source migration:** callback signatures previously added an extra Optional
+to `previous`. Update explicit callback types from `(State?, State)` to
+`(State, State)`, and from `(R?, R)` to `(R, R)` for selected values. Swift's
+inferred callback parameters change too: for a non-optional `CounterState`,
+replace `previous?.count` with `previous.count`. Keep Optional handling when
+the state or selection itself is Optional. Access to the separate property,
+such as `vm.previousState?.count`, remains valid.
 
 ## Lifecycle controls and ownership
 
+- `binding.unbind(vm)` releases that binding's ownership and subscriptions for one instance. Other direct and parent paths remain active; the instance is automatically disposed only when its final owner leaves and `aliveForever` is false. A later `watch/read` attaches again. Explicit business listeners need to be registered again.
 - `recycle(vm)` is a destructive global escape hatch: it removes every direct and parent owner path and disposes the shared object, including an `aliveForever` object. The next resolver-property access creates a fresh instance.
 - `aliveForever` requires an explicit key at every resolution site and skips automatic disposal when ownership reaches zero; it does not prevent explicit `recycle` or `ViewModel.reset()`.
 - `ViewModel.reset()` force-disposes every cached generation (including retained instances), rejects reentrant creation while teardown is running, clears global configuration and lifecycle observers, and permits clean re-initialization.
@@ -432,7 +537,7 @@ keyed or tagged spec—use `watch(spec)` / `read(spec)` instead.
 
 There is no in-place instance replacement API. To obtain an independent instance, use a new explicit key. If replacing the shared cached generation globally is intentional, call `recycle(vm)` and let resolver properties call `watch(spec)` / `read(spec)` again. The cache miss creates a new handle and dependency tree; owner paths, watch/listen subscriptions, and dependency edges are not migrated from the disposed object.
 
-Construction and dependency graphs are checked. Recursive construction, runtime ownership cycles, and every unkeyed `aliveForever` spec fail fast on the main actor. Failed builders roll back the dependency scope they started.
+Construction and dependency graphs are checked. Recursive construction, runtime ownership cycles, and every unkeyed `aliveForever` spec fail fast on the main actor. Failed initializers and builders roll back their dependency scopes, run registered `addDispose` cleanup, and cancel their owned Tasks before the error escapes through `readThrowing/watchThrowing`.
 
 ## Fine-grained observation
 
@@ -450,12 +555,16 @@ StateViewModelSelector(
 Only the strongly typed selected value triggers a rebuild. Pass `equals` when
 that selection needs a local comparison rule. Equality priority is local
 selector `equals` → global `ViewModelConfig.equals` → Swift `Equatable`.
+With an explicit `equals` closure, `StateViewModelSelector` also accepts a
+selected type that does not conform to `Equatable`.
 
 `StateViewModelValueWatcher` remains available for a list of untyped selectors.
 Both selector views rebuild their subscriptions when the ViewModel generation
 changes. Pair either one with `@ReadViewModel`, so `watch` does not add a broad
 duplicate rebuild. Full-state equality remains local initializer `equals` →
 global `ViewModelConfig.equals` → reference identity for class values.
+Swift value states, including Optional states, are treated as changed without
+an explicit local or global comparator; supply `equals` to deduplicate them.
 
 ## Pause / Resume
 
@@ -467,6 +576,11 @@ binding.addPauseProvider(AppPauseProvider())
 ```
 
 While paused, `notifyListeners` calls accumulate; on resume, a single `onUpdate` flushes them.
+Providers may be shared by multiple bindings. Removing one provider detaches
+only that binding's subscription, including any already-buffered events; it
+does not dispose the shared provider. Call `provider.dispose()` when its owner
+is finished with it. Subscribing to a disposed provider produces a finished
+stream.
 
 For UIKit page visibility, use `UIKitVisibilityPauseProvider` and call `pause()` / `resume()` from `viewWillDisappear` / `viewWillAppear`.
 

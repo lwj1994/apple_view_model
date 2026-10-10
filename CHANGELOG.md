@@ -6,6 +6,85 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+Aligns the resolution-cache, cached-query, and listener contracts with
+[Flutter `view_model` PR #82](https://github.com/lwj1994/flutter_view_model/pull/82)
+at commit [`c49171884eaa82b15888104ba7283f9bd422435b`](https://github.com/lwj1994/flutter_view_model/commit/c49171884eaa82b15888104ba7283f9bd422435b).
+Also reviews the existing core lifecycle, ownership, selector, and pause
+contracts against that same Flutter revision.
+
+### Changed
+
+- Cache resolved handles per binding by ViewModel type and effective key.
+  Repeated `watch(spec)` / `read(spec)` calls reuse a handle already owned
+  directly by that binding without repeating registry resolution or ownership
+  registration. Direct ownership checks, `aliveForever` key validation, and
+  read-to-watch subscription upgrades remain in place.
+  Unbind, recycle, handle disposal, binding disposal, and reset invalidate the
+  relevant entries.
+- Find the newest cached instance with one O(n) scan of creation indices.
+  Unkeyed, untagged single-result cached queries remain supported without a
+  deprecation warning. Reading an older instance does not change creation
+  order; creation and recycling can change the next query result.
+- **Source-breaking:** `listenState` callbacks now receive
+  `(State, State) throws -> Void`, and `listenStateSelect` callbacks receive
+  `(R, R) throws -> Void`, including binding helpers. A callback represents an
+  actual transition, so `previous` has no extra Optional wrapper. Update
+  callback type annotations and Swift-inferred expressions such as
+  `previous?.count` to `previous.count` when the state is non-optional. Optional
+  state/selection types can still contain `nil`; the separate `previousState`
+  property remains `State?`.
+- Document that specs, builders, and constructor arguments do not participate
+  in instance identity. Keep stable specs plus `watch` / `read` as the primary
+  resolution APIs and cached queries as advanced lookup-only APIs.
+
+### Added
+
+- Public `ViewModelBinding.unbind(_:)` for releasing one instance's direct
+  ownership and subscriptions while preserving other owners. Dependency
+  bindings also remove the root sources propagated by the released edge.
+- Custom-equality overloads for `listenStateSelect` and
+  `StateViewModelSelector` that accept selected values without `Equatable`
+  conformance. Existing `Equatable` APIs retain their local → global → default
+  comparison policy.
+- An iOS Simulator build in CI to compile UIKit integration alongside the
+  macOS build and serial tests.
+- Debug ambiguity warnings for single-result tag queries matching multiple
+  cached instances. Results still use tag equality and return the newest
+  matching instance. Warnings are deduplicated per ViewModel type using object
+  identity for class-backed tags and equality for Swift value tags, without
+  calling the tag's hash function for warning bookkeeping. Warnings respect
+  `ViewModel.config.isLoggingEnabled`. Reset clears the warning history;
+  untagged, exact-key, and tag-batch lookups do not warn.
+
+### Fixed
+
+- Run `addDispose` callbacks and cancel owned Tasks when a ViewModel initializer
+  or builder throws before a handle takes ownership. Successful construction
+  leaves cleanup registered for normal disposal, and rollback remains idempotent.
+- Reserve creation indices before lifecycle callbacks can create another
+  instance of the same type, keeping newest/tag queries ordered during nested
+  `onCreate` and `onBind` resolution.
+- Ignore pause events from cancelled or removed provider subscriptions,
+  including removal followed by re-adding the same provider. New subscriptions
+  to disposed providers now finish immediately.
+- Release application notification observers when an `AppPauseProvider` is
+  deinitialized, without disposing providers shared by other bindings.
+- Use constant-time listener membership checks during notification dispatch,
+  preserving registration order, independent cancellation, and error isolation.
+- Release consumed state events during long reentrant cascades using an
+  amortized O(1) FIFO queue, so earlier state objects are not retained until
+  the entire cascade ends.
+- Deliver reentrant `setState` events in FIFO order. State changes immediately,
+  but every remaining listener receives the current transition before a
+  listener-triggered transition is dispatched. Each event keeps its original
+  previous/current values, and the synchronous dispatch uses one update
+  transaction to coalesce root refresh requests. Disposing a ViewModel stops
+  delivery and clears pending transitions.
+- Forward every dependency notification while coalescing only root refreshes.
+  This keeps parent business listeners from losing queued child transitions.
+  In a watched diamond, both dependency paths reach business listeners and
+  the root host still refreshes once, matching the Flutter contract.
+
 ## [0.10.0] - 2026-09-11
 
 ### Added

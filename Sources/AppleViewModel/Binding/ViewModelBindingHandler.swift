@@ -42,6 +42,12 @@ public final class ViewModelBindingHandler {
     @_spi(Internal)
     public var primaryOwner: ViewModelBinding? { dependencyBindings.first }
 
+    /// Whether this binding has its own reference, independently of parents.
+    func hasDirectRef(_ binding: ViewModelBinding) -> Bool {
+        let identity = ObjectIdentifier(binding)
+        return refSources[identity]?.sources.contains(identity) == true
+    }
+
     @_spi(Internal)
     @discardableResult
     public func addOwnerChangeListener(

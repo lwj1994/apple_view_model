@@ -20,3 +20,9 @@ jobs:
       run: swift build -v
     - name: Run tests
       run: swift test --no-parallel -v
+    - name: Build iOS Simulator
+      run: >-
+        xcodebuild -scheme AppleViewModel
+        -destination 'generic/platform=iOS Simulator'
+        -derivedDataPath "$RUNNER_TEMP/apple-view-model-ios"
+        CODE_SIGNING_ALLOWED=NO build

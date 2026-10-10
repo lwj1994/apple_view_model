@@ -139,7 +139,7 @@ final class ParentDependencyBindingTests: XCTestCase {
         XCTAssertEqual(ownerB.updates, 2)
     }
 
-    func test_diamondPropagation_updatesEachBindingOncePerTransaction() {
+    func test_diamondPropagation_forwardsEachPathAndRefreshesRootOnce() {
         let owner = PDCountingBinding()
         defer { owner.dispose() }
         let root = owner.watch(pdDiamondRootSpec)
@@ -165,7 +165,9 @@ final class ParentDependencyBindingTests: XCTestCase {
 
         XCTAssertEqual(leftNotifications, 1)
         XCTAssertEqual(rightNotifications, 1)
-        XCTAssertEqual(rootNotifications, 1)
+        // Both dependency paths reach business listeners. Coalescing applies
+        // only to root refreshes, matching Flutter's dependency contract.
+        XCTAssertEqual(rootNotifications, 2)
         XCTAssertEqual(owner.updates, 1)
     }
 

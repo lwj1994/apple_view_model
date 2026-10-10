@@ -93,6 +93,9 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     /// tag. Throws `ViewModelError` when no match is found or when the match has
     /// already been disposed. Prefer `ViewModelBinding.read(_:)` with a stable
     /// spec for normal dependency resolution.
+    /// With neither key nor tag, returns the newest cached instance of `T` by
+    /// creation order, unchanged by reads. A tag filters that same ordering;
+    /// multiple matches emit a DEBUG diagnostic when logging is enabled.
     public static func readCached<T: ViewModel>(
         key: AnyHashable? = nil,
         tag: AnyHashable? = nil
@@ -166,6 +169,9 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     }
 
     private var listeners: [ListenerEntry] = []
+    // Tokens keep duplicate registrations independent while making delivery's
+    // liveness checks constant-time. The array preserves registration order.
+    private var listenerIDs: Set<UUID> = []
     public var hasListeners: Bool { !listeners.isEmpty }
 
     private let autoDispose = AutoDisposeController()
@@ -217,8 +223,11 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     public func listen(onChanged: @escaping () throws -> Void) -> () -> Void {
         let id = UUID()
         listeners.append(ListenerEntry(id: id, callback: onChanged))
+        listenerIDs.insert(id)
         return { [weak self] in
-            self?.listeners.removeAll { $0.id == id }
+            guard let self else { return }
+            self.listenerIDs.remove(id)
+            self.listeners.removeAll { $0.id == id }
         }
     }
 
@@ -238,7 +247,7 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
             // Snapshot first so callbacks can add / remove listeners without breaking iteration.
             let snapshot = listeners
             for entry in snapshot {
-                guard listeners.contains(where: { $0.id == entry.id }) else { continue }
+                guard listenerIDs.contains(entry.id) else { continue }
                 do {
                     try entry.callback()
                 } catch {
@@ -343,6 +352,7 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
                     error, type: .dispose, context: "Lifecycle observer onDispose error")
             }
         }
+        listenerIDs.removeAll()
         listeners.removeAll()
     }
 
