@@ -29,6 +29,14 @@ final class AutoDisposeInstanceController {
         _ type: Value.Type,
         factory: InstanceFactory<Value>
     ) throws -> Value {
+        try getHandle(type, factory: factory).requireInstance()
+    }
+
+    /// Resolve and attach ownership once, exposing the handle for spec caching.
+    func getHandle<Value: AnyObject>(
+        _ type: Value.Type,
+        factory: InstanceFactory<Value>
+    ) throws -> InstanceHandle<Value> {
         guard !disposed else {
             throw ViewModelError("AutoDisposeInstanceController.getInstance() called after dispose.")
         }
@@ -54,7 +62,7 @@ final class AutoDisposeInstanceController {
             )
             throw error
         }
-        return try handle.requireInstance()
+        return handle
     }
 
     func getInstancesByTag<Value: AnyObject>(

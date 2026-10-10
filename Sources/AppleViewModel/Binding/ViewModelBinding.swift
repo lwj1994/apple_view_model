@@ -75,6 +75,16 @@ open class ViewModelBinding {
     private var viewModelUpdateHook: ((ViewModel) -> Void)?
     private let defaultViewModelKey = AnyHashable(ViewModelPrivateKey())
 
+    private struct ResolutionIdentity: Hashable {
+        let type: ObjectIdentifier
+        let key: AnyHashable
+    }
+
+    /// Handles already resolved through a spec and directly owned by this binding.
+    /// A reverse index makes generation teardown independent of the cache size.
+    private var resolvedHandles: [ResolutionIdentity: any _AnyHandle] = [:]
+    private var resolvedHandleIdentities: [ObjectIdentifier: ResolutionIdentity] = [:]
+
     private lazy var instanceController: AutoDisposeInstanceController = {
         AutoDisposeInstanceController(
             binding: self,
@@ -113,6 +123,10 @@ open class ViewModelBinding {
     }
 
     private func handleInstanceDetached(_ handle: any _AnyHandle, viewModel: ViewModel) {
+        if let identity = resolvedHandleIdentities.removeValue(forKey: ObjectIdentifier(handle)),
+           resolvedHandles[identity] === handle {
+            resolvedHandles.removeValue(forKey: identity)
+        }
         watchedViewModels.removeValue(forKey: ObjectIdentifier(viewModel))?()
         let attached = subscriptions.filter { $0.isAttached(to: viewModel) }
         for subscription in attached {
@@ -185,6 +199,9 @@ open class ViewModelBinding {
     /// Advanced lookup-only API. Find an already-created ViewModel by key or tag
     /// and subscribe. Throws on miss and never creates an instance. Prefer
     /// `watch(_:)` with a stable spec for normal dependency resolution.
+    /// Without a key, selects the newest matching instance by creation order.
+    /// Reading an older instance does not change that order. Ambiguous tag
+    /// queries emit a diagnostic in DEBUG builds when logging is enabled.
     public func watchCached<VM: ViewModel>(key: AnyHashable? = nil, tag: AnyHashable? = nil) throws -> VM {
         try getViewModel(
             arg: InstanceArg(key: key, tag: tag),
@@ -194,6 +211,7 @@ open class ViewModelBinding {
 
     /// Advanced lookup-only API. Like `watchCached` but does not subscribe.
     /// Prefer `read(_:)` with a stable spec for normal dependency resolution.
+    /// With neither key nor tag, returns the newest cached instance of `VM`.
     public func readCached<VM: ViewModel>(key: AnyHashable? = nil, tag: AnyHashable? = nil) throws -> VM {
         try getViewModel(
             arg: InstanceArg(key: key, tag: tag),
@@ -288,9 +306,11 @@ open class ViewModelBinding {
         addSubscription(vm) { value in value.listen(onChanged: onChanged) }
     }
 
+    /// Observe actual transitions. `previous` has type `S`, including `nil`
+    /// only when `S` itself is optional; registration does not emit an event.
     public func listenState<VM, S>(
         _ factory: any ViewModelFactory<VM>,
-        onChanged: @escaping (S?, S) throws -> Void
+        onChanged: @escaping (S, S) throws -> Void
     ) where VM: StateViewModel<S> {
         let vm = read(factory)
         addSubscription(vm) { value in value.listenState(onChanged: onChanged) }
@@ -300,7 +320,7 @@ open class ViewModelBinding {
         _ factory: any ViewModelFactory<VM>,
         selector: @escaping (S) -> R,
         equals: ((R, R) -> Bool)? = nil,
-        onChanged: @escaping (R?, R) throws -> Void
+        onChanged: @escaping (R, R) throws -> Void
     ) where VM: StateViewModel<S> {
         let vm = read(factory)
         addSubscription(vm) { value in
@@ -336,6 +356,8 @@ open class ViewModelBinding {
     open func dispose() {
         if isDisposed { return }
         isDisposed = true
+        resolvedHandles.removeAll()
+        resolvedHandleIdentities.removeAll()
         for disposer in Array(watchedViewModels.values) { disposer() }
         watchedViewModels.removeAll()
         for subscription in subscriptions { subscription.dispose() }
@@ -398,7 +420,7 @@ open class ViewModelBinding {
         return vm
     }
 
-    /// Creates a ViewModel using the supplied factory.
+    /// Resolve a spec, reusing an already-owned handle before entering the registry.
     ///
     /// The full registry call runs with this binding on the construction stack,
     /// covering both `init()` and `onCreate(_:)`. A ViewModel that resolves a
@@ -413,7 +435,6 @@ open class ViewModelBinding {
             throw ViewModelError("Cannot create \(VM.self): binding is disposed.")
         }
         let configuredKey = factory.key()
-        let tag = factory.tag()
         let aliveForever = factory.aliveForever()
         if let validationError = Self.aliveForeverKeyValidationError(
             configuredKey: configuredKey,
@@ -422,14 +443,32 @@ open class ViewModelBinding {
             throw ViewModelError(validationError)
         }
         let key = configuredKey ?? defaultViewModelKey
-
-        let instanceFactory = InstanceFactory<VM>(
-            builder: { try factory.buildThrowing() },
-            arg: InstanceArg(key: key, tag: tag, aliveForever: aliveForever)
-        )
-
-        let vm = try ViewModelBinding.withBuilding(self) {
-            try instanceController.getInstance(VM.self, factory: instanceFactory)
+        let identity = ResolutionIdentity(type: ObjectIdentifier(VM.self), key: key)
+        let vm: VM
+        if let cached = resolvedHandles[identity] as? InstanceHandle<VM>,
+           !cached.isDisposed,
+           !InstanceManager.shared.isResetting,
+           cached.containsDirectBinding(id),
+           let instance = cached.value,
+           !instance.isDisposed,
+           instance.refHandler.hasDirectRef(self) {
+            // Propagated parent ownership alone is insufficient: both direct
+            // ownership records must still exist before skipping bind/addRef.
+            vm = instance
+        } else {
+            if let stale = resolvedHandles.removeValue(forKey: identity) {
+                resolvedHandleIdentities.removeValue(forKey: ObjectIdentifier(stale))
+            }
+            let instanceFactory = InstanceFactory<VM>(
+                builder: { try factory.buildThrowing() },
+                arg: InstanceArg(key: key, tag: factory.tag(), aliveForever: aliveForever)
+            )
+            let handle = try ViewModelBinding.withBuilding(self) {
+                try instanceController.getHandle(VM.self, factory: instanceFactory)
+            }
+            vm = try handle.requireInstance()
+            resolvedHandles[identity] = handle
+            resolvedHandleIdentities[ObjectIdentifier(handle)] = identity
         }
 
         if listen {
@@ -451,7 +490,9 @@ open class ViewModelBinding {
                 viewModelLog("\(type(of: self)) paused, delay rebuild")
                 return
             }
-            if markViewModelBindingUpdated(self) {
+            // Dependency scopes forward every business notification. Only root
+            // refresh requests are coalesced across queued state transitions.
+            if self.isDependencyBinding || markViewModelBindingUpdated(self) {
                 self.onViewModelUpdate(vm)
             }
         })

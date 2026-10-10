@@ -15,6 +15,8 @@ import Foundation
 @MainActor
 open class StateViewModel<State>: ViewModel {
     public private(set) var state: State
+    /// The last replaced state, or `nil` before the first transition. Listener
+    /// callbacks already have a previous value and therefore use `State` itself.
     public private(set) var previousState: State?
     public let initialState: State
 
@@ -25,6 +27,8 @@ open class StateViewModel<State>: ViewModel {
 
     private let equalsFn: (State, State) -> Bool
     private var stateListeners: [StateListenerEntry] = []
+    private var pendingStateEvents: [(previous: State, current: State)] = []
+    private var isDispatchingStateEvents = false
 
     public init(state: State, equals: ((State, State) -> Bool)? = nil) {
         self.state = state
@@ -50,17 +54,17 @@ open class StateViewModel<State>: ViewModel {
         super.init()
     }
 
-    /// Subscribe to raw state changes; callback receives `(previous, current)`.
+    /// Subscribe to actual transitions; callback receives `(previous, current)`.
+    /// Registration does not emit an initial event. Both values have type
+    /// `State`, which permits `nil` only when `State` itself is optional.
     @discardableResult
     public func listenState(
-        onChanged: @escaping (State?, State) throws -> Void
+        onChanged: @escaping (State, State) throws -> Void
     ) -> () -> Void {
-        _listenStateTransition { previous, current in
-            try onChanged(previous, current)
-        }
+        _listenStateTransition(onChanged: onChanged)
     }
 
-    /// Internal non-optional state transition stream used by selector hosts.
+    /// Internal raw state transition stream used by selector hosts.
     ///
     /// Keeping the transition raw lets long-lived SwiftUI `@StateObject` hosts
     /// apply their latest selector configuration without replacing the
@@ -81,11 +85,12 @@ open class StateViewModel<State>: ViewModel {
 
     /// Subscribe to the output of a selector. Equality resolution is local
     /// `equals` → global `ViewModelConfig.equals` → Swift `Equatable`.
+    /// Both callback values have type `R`, without an extra Optional wrapper.
     @discardableResult
     public func listenStateSelect<R: Equatable>(
         selector: @escaping (State) -> R,
         equals: ((R, R) -> Bool)? = nil,
-        onChanged: @escaping (R?, R) throws -> Void
+        onChanged: @escaping (R, R) throws -> Void
     ) -> () -> Void {
         let globalEquals = ViewModel.config.equals
         let effectiveEquals: (R, R) -> Bool = equals ?? { previous, current in
@@ -113,25 +118,42 @@ open class StateViewModel<State>: ViewModel {
         }
         if equalsFn(state, newState) { return }
         let previous = state
-        let current = newState
         previousState = previous
         state = newState
-        // Phase 1: state listeners receive (previous, current).
-        let snapshot = stateListeners
-        for entry in snapshot {
-            guard stateListeners.contains(where: { $0.id == entry.id }) else { continue }
-            do {
-                try entry.callback(previous, current)
-            } catch {
-                reportViewModelError(
-                    error, type: .listener, context: "stateListener error")
+        pendingStateEvents.append((previous, newState))
+        guard !isDispatchingStateEvents else { return }
+        isDispatchingStateEvents = true
+        defer {
+            isDispatchingStateEvents = false
+            pendingStateEvents.removeAll(keepingCapacity: true)
+        }
+
+        // Reentrant setState changes the value immediately, but its event waits
+        // until every remaining listener has received the current transition.
+        // Indexing avoids repeatedly shifting an Array when draining the queue.
+        runInViewModelUpdateTransaction {
+            var nextEvent = 0
+            while nextEvent < pendingStateEvents.count, !isDisposed {
+                let event = pendingStateEvents[nextEvent]
+                nextEvent += 1
+                let snapshot = stateListeners
+                for entry in snapshot {
+                    if isDisposed { break }
+                    guard stateListeners.contains(where: { $0.id == entry.id }) else { continue }
+                    do {
+                        try entry.callback(event.previous, event.current)
+                    } catch {
+                        reportViewModelError(
+                            error, type: .listener, context: "stateListener error")
+                    }
+                }
+                if !isDisposed { notifyListeners() }
             }
         }
-        // Phase 2: general listeners fan out.
-        notifyListeners()
     }
 
     open override func dispose() {
+        pendingStateEvents.removeAll()
         stateListeners.removeAll()
         super.dispose()
     }

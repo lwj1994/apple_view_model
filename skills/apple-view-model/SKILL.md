@@ -213,8 +213,12 @@ intentionally independent from that ViewModel.
 
 ## Identity, sharing, and retention
 
-- Identity is the resolved ViewModel type plus the effective `key`. The
-  builder's runtime result and `tag` do not participate in identity.
+- Identity is the resolved ViewModel type plus the effective `key`. The spec
+  object, builder, constructor arguments, builder's runtime result, and `tag`
+  do not participate. Two different unkeyed specs of the same resolved type,
+  or one unkeyed arg-spec called with different arguments, resolve one instance
+  within a binding; the second builder does not run. Encode distinguishing
+  arguments in an explicit key when separate instances are required.
 - With no explicit key, one binding reuses one instance per resolved ViewModel
   type and remains isolated from other bindings.
 - Use a key for intentional cross-binding sharing or multiple instances of the
@@ -282,6 +286,14 @@ notification semantics while surfacing recoverable factory/cycle/reset errors.
 Declare a fallible factory with `ViewModelSpec(throwingBuilder:)`. Do not replace
 ordinary resolution with the throwing form when no recovery path is needed.
 
+Repeated spec resolution reuses a binding's cached handle only while both the
+handle and ViewModel retain that binding's direct ownership. Propagated parent
+ownership alone is insufficient. Keep resolver getters: recycle, detach, and
+reset invalidate cached generations, and binding disposal clears the cache.
+Switching from `read` to `watch` still installs the notification subscription;
+repeated `watch` calls do not duplicate it. Every spec call still validates
+that `aliveForever` has an explicit key.
+
 ## Cached lookup APIs (advanced)
 
 Do not replace a stable spec with cache lookup. These APIs couple the caller to
@@ -298,9 +310,19 @@ cross-owner state.
 | `watchCachesByTag` | No, all hits | Yes | Yes | Yes |
 | `readCachesByTag` | No, all hits | Yes | No | Yes |
 
-Non-`maybe` single-result cached lookups throw on a miss. A single lookup by tag
-can be ambiguous and depends on cache creation order; use the batch API when a
-tag may match several instances. The source-compatible non-throwing
+Non-`maybe` single-result cached lookups throw on a miss. Without a key or tag,
+a single-result lookup returns the newest instance of the requested type still
+in the shared cache by creation order. Reading an older instance does not make
+it newest; creating or recycling an instance can change the next result. This
+is supported behavior and emits no deprecation warning.
+
+A single tag lookup returns the newest matching instance. In DEBUG builds with
+`ViewModel.config.isLoggingEnabled`, multiple matches emit a diagnostic. Matching
+uses tag equality; warning deduplication uses the VM type plus class tag object
+identity, or value equality for value tags, according to `AnyHashable.base`.
+Diagnostics do not hash tags, and reset clears the warning history. Prefer an
+explicit key for a particular instance or a batch API for every match.
+The source-compatible non-throwing
 `maybeWatchCached` / `maybeReadCached` APIs return `nil` on lookup failure. Use
 their `*Throwing` counterparts when unexpected non-`ViewModelError` failures
 must be preserved.
@@ -371,8 +393,10 @@ final class CheckoutViewModel: ViewModel {
   the parent's lifetime, and mirrors current root owners in real time.
 - Ownership is source-aware. Direct and multiple parent paths sharing one
   visible binding id are released independently.
-- Synchronous propagation is transaction-based; each binding updates at most
-  once even in a diamond graph. Keep business computations in explicit
+- Synchronous propagation is transaction-based; each root binding refreshes at
+  most once even in a diamond graph. Dependency bindings forward every path
+  without suppressing business notifications, so parent listeners may observe
+  intermediate and final derived values. Keep business computations in explicit
   dependency listeners rather than binding refresh callbacks.
 
 For example, register a business reaction to a stable child spec:
@@ -508,6 +532,18 @@ owned resources with `addDispose` and let the framework invoke cleanup.
   universally preferred.
 - `setState` is the only operation that emits a state diff. A plain
   `notifyListeners()` only reaches broad ViewModel listeners.
+- Write `listenState` callbacks as `(State, State)` and `listenStateSelect`
+  callbacks as `(R, R)`: `previous` is the replaced state or selected value,
+  with no extra Optional wrapper. Registration does not emit an initial event.
+  Optional `State` or `R` still permits `nil`. The separate `previousState`
+  property remains `State?` because it has no value before the first transition.
+  Migrate inferred `previous?.field` to `previous.field` for nonoptional states.
+- Reentrant `setState` updates `state` immediately, but queues its event until
+  the current event reaches all remaining state and general listeners. Treat
+  callback arguments as the event snapshot: `vm.state` can already be newer.
+  Events drain in FIFO order within one binding-update transaction, and
+  disposal discards pending events. Root refreshes are coalesced; explicit
+  business listeners still receive each transition.
 - Full-state equality is local initializer `equals` → global
   `ViewModelConfig.equals` → reference identity for class values; value types
   are treated as changed without a comparator.

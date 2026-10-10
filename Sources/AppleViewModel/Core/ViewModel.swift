@@ -93,6 +93,9 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     /// tag. Throws `ViewModelError` when no match is found or when the match has
     /// already been disposed. Prefer `ViewModelBinding.read(_:)` with a stable
     /// spec for normal dependency resolution.
+    /// With neither key nor tag, returns the newest cached instance of `T` by
+    /// creation order, unchanged by reads. A tag filters that same ordering;
+    /// multiple matches emit a DEBUG diagnostic when logging is enabled.
     public static func readCached<T: ViewModel>(
         key: AnyHashable? = nil,
         tag: AnyHashable? = nil

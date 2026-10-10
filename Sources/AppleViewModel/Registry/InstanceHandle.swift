@@ -61,6 +61,12 @@ final class InstanceHandle<Value: AnyObject> {
         bindingSources[bindingId] != nil
     }
 
+    /// A root can also appear through a parent; fast resolution requires its
+    /// own direct path, not merely membership in the visible owner list.
+    func containsDirectBinding(_ id: String) -> Bool {
+        directBindingSources[id] != nil
+    }
+
     /// Add the direct ownership source for a binding id.
     func bind(_ id: String?) {
         guard let id, !isDisposed else { return }

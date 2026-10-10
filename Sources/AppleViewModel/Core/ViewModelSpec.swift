@@ -21,6 +21,9 @@ import Foundation
 /// `overrideWith(_:)` for an explicitly restorable synchronous scope and
 /// `runWithOverride(_:operation:)` for async/task-local isolation.
 /// Every `aliveForever` spec must also configure an explicit non-nil key.
+/// The spec object, builder, and constructor arguments are not instance
+/// identity. Different unkeyed specs for the same type resolve one instance
+/// within a binding; use distinct explicit keys to distinguish them.
 ///
 /// Mirrors the Dart `ViewModelSpec<T>`.
 @MainActor

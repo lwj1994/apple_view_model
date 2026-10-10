@@ -7,6 +7,9 @@ import Foundation
 /// default to `nil` / `false`; two factories that return the same non-nil `key`
 /// resolve to the same instance in the registry. Returning `true` from
 /// `aliveForever()` requires `key()` to return a non-nil explicit key.
+/// Identity is the resolved `VM` type plus effective key: the factory object,
+/// builder, and constructor arguments do not distinguish instances. Without an
+/// explicit key, even different factories of one type share within a binding.
 ///
 /// The protocol is `@MainActor` because the canonical conformer (`ViewModelSpec`)
 /// holds mutable state (the test-time `proxy` slot) alongside a `@MainActor`
