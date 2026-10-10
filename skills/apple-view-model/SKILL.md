@@ -146,6 +146,7 @@ whose result or side effects belong to one ViewModel generation.
 
 - One `ViewModelTaskScope` is owned by each object generation. It is disposed
   synchronously from `ViewModel.onDispose`, not inferred from object `deinit`.
+  A failed initializer or builder also cancels Tasks started in that scope.
 - `task(...)` creates a main-actor Task for async I/O, listener loops, and state
   application. `io(...)` is the preferred background worker, defaults
   to `.userInitiated`, and accepts
@@ -506,6 +507,11 @@ See `examples/sharing_example.swift` for the complete example.
 ## Lifecycle controls and safety
 
 - Routine cleanup is binding-driven; do not call `vm.dispose()` directly.
+- `binding.unbind(vm)` releases one instance's ownership and subscriptions from
+  that binding. Other direct and parent sources remain active; a dependency
+  binding also releases the root sources propagated by its removed edge.
+  A later `watch/read` attaches again; explicit business listeners must be
+  registered again.
 - `recycle(vm)` is a destructive global escape hatch. It removes every owner
   path and force-disposes the managed object, including `aliveForever`.
 - There is no in-place replacement capability. Use a new explicit key for an
@@ -516,8 +522,8 @@ See `examples/sharing_example.swift` for the complete example.
   again; a separately stored reference points to the disposed generation.
 - Recursive construction, runtime dependency cycles, and invalid nested
   `aliveForever` usage fail fast through `watch/read`, or throw through
-  `watchThrowing/readThrowing`. Failed builders roll back the dependency scope
-  they started.
+  `watchThrowing/readThrowing`. Failed initializers and builders roll back their
+  dependency scopes, run registered `addDispose` cleanup, and cancel owned Tasks.
 - `ViewModel.reset()` force-disposes all cached generations, including retained
   instances, blocks reentrant resolution during teardown, clears configuration
   and lifecycle observers, and allows initialization again.
@@ -547,8 +553,10 @@ owned resources with `addDispose` and let the framework invoke cleanup.
 - Full-state equality is local initializer `equals` → global
   `ViewModelConfig.equals` → reference identity for class values; value types
   are treated as changed without a comparator.
-- `listenStateSelect` requires an `Equatable` selected value. Comparison order
-  is local selector `equals` → global `ViewModelConfig.equals` → Swift equality.
+- For `Equatable` selected values, comparison order is local selector `equals`
+  → global `ViewModelConfig.equals` → Swift equality. Both `listenStateSelect`
+  and `StateViewModelSelector` also accept non-`Equatable` selections when the
+  caller supplies an explicit typed `equals` closure.
 - Prefer the strongly typed `StateViewModelSelector`; keep
   `StateViewModelValueWatcher` only for compatibility with multiple untyped
   selectors. Both rebuild subscriptions when the VM generation changes.
@@ -560,6 +568,10 @@ owned resources with `addDispose` and let the framework invoke cleanup.
 - No pause provider is installed by default.
 - Add `AppPauseProvider` for application visibility or
   `UIKitVisibilityPauseProvider` for UIKit page visibility.
+- Pause providers can be shared. Removing a provider detaches only that
+  binding's subscription, including buffered events from the old subscription.
+  Its owner calls `dispose()` when all uses are finished; a disposed provider's
+  new streams finish immediately.
 - This port currently has no Flutter DevTools extension, `@GenSpec` generator,
   route provider, or ticker provider.
 - Swift retains fail-fast `watch/read` for source compatibility and additionally

@@ -169,6 +169,9 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     }
 
     private var listeners: [ListenerEntry] = []
+    // Tokens keep duplicate registrations independent while making delivery's
+    // liveness checks constant-time. The array preserves registration order.
+    private var listenerIDs: Set<UUID> = []
     public var hasListeners: Bool { !listeners.isEmpty }
 
     private let autoDispose = AutoDisposeController()
@@ -220,8 +223,11 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     public func listen(onChanged: @escaping () throws -> Void) -> () -> Void {
         let id = UUID()
         listeners.append(ListenerEntry(id: id, callback: onChanged))
+        listenerIDs.insert(id)
         return { [weak self] in
-            self?.listeners.removeAll { $0.id == id }
+            guard let self else { return }
+            self.listenerIDs.remove(id)
+            self.listeners.removeAll { $0.id == id }
         }
     }
 
@@ -241,7 +247,7 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
             // Snapshot first so callbacks can add / remove listeners without breaking iteration.
             let snapshot = listeners
             for entry in snapshot {
-                guard listeners.contains(where: { $0.id == entry.id }) else { continue }
+                guard listenerIDs.contains(entry.id) else { continue }
                 do {
                     try entry.callback()
                 } catch {
@@ -346,6 +352,7 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
                     error, type: .dispose, context: "Lifecycle observer onDispose error")
             }
         }
+        listenerIDs.removeAll()
         listeners.removeAll()
     }
 

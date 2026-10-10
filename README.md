@@ -123,6 +123,8 @@ as polling, `for await` listeners, refresh requests, or background calculations.
 The scope is pure Swift and is disposed from `ViewModel.onDispose`; it does not
 wait for object `deinit`, so cancellation still happens when another reference
 temporarily keeps the disposed ViewModel object in memory.
+Tasks started during construction are also cancelled if the initializer or
+builder throws before the ViewModel can enter the registry.
 
 | API | Execution | Use case |
 |---|---|---|
@@ -476,7 +478,8 @@ only a missing key falls back to the tag query.
 ### Side-effect listeners
 
 `listen`, `listenState`, and `listenStateSelect` use `read` internally and
-automatically remove their side-effect subscriptions when the binding disposes.
+automatically remove their side-effect subscriptions when the binding disposes
+or explicitly unbinds that ViewModel.
 Register them once for the relevant owner lifetime; do not put a `listen` call
 in a repeatedly evaluated resolver property.
 
@@ -506,6 +509,11 @@ binding.listenStateSelect(counterSpec, selector: { $0.count }) { previous, curre
 }
 ```
 
+Selected values use local `equals`, then global `ViewModelConfig.equals`, then
+their `Equatable` implementation. A selected type without `Equatable`
+conformance is supported when an explicit typed `equals` closure is supplied;
+this applies to both ViewModel and binding listener APIs.
+
 `State` or the selected `R` may itself be Optional. For example, callbacks for
 `StateViewModel<String?>` receive `(String?, String?)`, and either value can be
 `nil`. The separate `previousState` property remains `State?`, since it has no
@@ -521,6 +529,7 @@ such as `vm.previousState?.count`, remains valid.
 
 ## Lifecycle controls and ownership
 
+- `binding.unbind(vm)` releases that binding's ownership and subscriptions for one instance. Other direct and parent paths remain active; the instance is automatically disposed only when its final owner leaves and `aliveForever` is false. A later `watch/read` attaches again. Explicit business listeners need to be registered again.
 - `recycle(vm)` is a destructive global escape hatch: it removes every direct and parent owner path and disposes the shared object, including an `aliveForever` object. The next resolver-property access creates a fresh instance.
 - `aliveForever` requires an explicit key at every resolution site and skips automatic disposal when ownership reaches zero; it does not prevent explicit `recycle` or `ViewModel.reset()`.
 - `ViewModel.reset()` force-disposes every cached generation (including retained instances), rejects reentrant creation while teardown is running, clears global configuration and lifecycle observers, and permits clean re-initialization.
@@ -528,7 +537,7 @@ such as `vm.previousState?.count`, remains valid.
 
 There is no in-place instance replacement API. To obtain an independent instance, use a new explicit key. If replacing the shared cached generation globally is intentional, call `recycle(vm)` and let resolver properties call `watch(spec)` / `read(spec)` again. The cache miss creates a new handle and dependency tree; owner paths, watch/listen subscriptions, and dependency edges are not migrated from the disposed object.
 
-Construction and dependency graphs are checked. Recursive construction, runtime ownership cycles, and every unkeyed `aliveForever` spec fail fast on the main actor. Failed builders roll back the dependency scope they started.
+Construction and dependency graphs are checked. Recursive construction, runtime ownership cycles, and every unkeyed `aliveForever` spec fail fast on the main actor. Failed initializers and builders roll back their dependency scopes, run registered `addDispose` cleanup, and cancel their owned Tasks before the error escapes through `readThrowing/watchThrowing`.
 
 ## Fine-grained observation
 
@@ -546,12 +555,16 @@ StateViewModelSelector(
 Only the strongly typed selected value triggers a rebuild. Pass `equals` when
 that selection needs a local comparison rule. Equality priority is local
 selector `equals` → global `ViewModelConfig.equals` → Swift `Equatable`.
+With an explicit `equals` closure, `StateViewModelSelector` also accepts a
+selected type that does not conform to `Equatable`.
 
 `StateViewModelValueWatcher` remains available for a list of untyped selectors.
 Both selector views rebuild their subscriptions when the ViewModel generation
 changes. Pair either one with `@ReadViewModel`, so `watch` does not add a broad
 duplicate rebuild. Full-state equality remains local initializer `equals` →
 global `ViewModelConfig.equals` → reference identity for class values.
+Swift value states, including Optional states, are treated as changed without
+an explicit local or global comparator; supply `equals` to deduplicate them.
 
 ## Pause / Resume
 
@@ -563,6 +576,11 @@ binding.addPauseProvider(AppPauseProvider())
 ```
 
 While paused, `notifyListeners` calls accumulate; on resume, a single `onUpdate` flushes them.
+Providers may be shared by multiple bindings. Removing one provider detaches
+only that binding's subscription, including any already-buffered events; it
+does not dispose the shared provider. Call `provider.dispose()` when its owner
+is finished with it. Subscribing to a disposed provider produces a finished
+stream.
 
 For UIKit page visibility, use `UIKitVisibilityPauseProvider` and call `pause()` / `resume()` from `viewWillDisappear` / `viewWillAppear`.
 

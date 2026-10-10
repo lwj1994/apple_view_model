@@ -121,11 +121,14 @@ final class Store<Value: AnyObject> {
                         + "and was not cached."
                 )
             }
-            defer { nextIndex += 1 }
+            // Reserve the index before onCreate/onBind can synchronously
+            // construct another instance of this type with a different key.
+            let creationIndex = nextIndex
+            nextIndex += 1
             return InstanceHandle<Value>(
                 value: instance,
                 arg: arg,
-                index: nextIndex
+                index: creationIndex
             )
         }
         if disposed {

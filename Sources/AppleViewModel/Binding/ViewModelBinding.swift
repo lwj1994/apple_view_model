@@ -332,6 +332,33 @@ open class ViewModelBinding {
         }
     }
 
+    /// Observe a selected value that supplies its own equality policy, without
+    /// requiring the selected type to conform to `Equatable`.
+    public func listenStateSelect<VM, S, R>(
+        _ factory: any ViewModelFactory<VM>,
+        selector: @escaping (S) -> R,
+        equals: @escaping (R, R) -> Bool,
+        onChanged: @escaping (R, R) throws -> Void
+    ) where VM: StateViewModel<S> {
+        let vm = read(factory)
+        addSubscription(vm) { value in
+            value.listenStateSelect(
+                selector: selector,
+                equals: equals,
+                onChanged: onChanged
+            )
+        }
+    }
+
+    /// Release this binding's direct ownership and subscriptions for one VM.
+    /// Other bindings and parent dependency paths keep their ownership. The VM
+    /// is disposed only when its final owner leaves and `aliveForever` is false.
+    /// A later `watch` / `read` attaches normally, creating a generation if needed.
+    /// Calling this again, or with an instance this binding does not own, is a no-op.
+    public func unbind<VM: ViewModel>(_ viewModel: VM) {
+        instanceController.unbind(viewModel)
+    }
+
     /// Force-dispose a specific ViewModel. Subsequent `watch` / `read` calls will
     /// rebuild it.
     public func recycle<VM: ViewModel>(_ viewModel: VM) {

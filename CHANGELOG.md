@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 Aligns the resolution-cache, cached-query, and listener contracts with
 [Flutter `view_model` PR #82](https://github.com/lwj1994/flutter_view_model/pull/82)
 at commit [`c49171884eaa82b15888104ba7283f9bd422435b`](https://github.com/lwj1994/flutter_view_model/commit/c49171884eaa82b15888104ba7283f9bd422435b).
+Also reviews the existing core lifecycle, ownership, selector, and pause
+contracts against that same Flutter revision.
 
 ### Changed
 
@@ -37,6 +39,15 @@ at commit [`c49171884eaa82b15888104ba7283f9bd422435b`](https://github.com/lwj199
 
 ### Added
 
+- Public `ViewModelBinding.unbind(_:)` for releasing one instance's direct
+  ownership and subscriptions while preserving other owners. Dependency
+  bindings also remove the root sources propagated by the released edge.
+- Custom-equality overloads for `listenStateSelect` and
+  `StateViewModelSelector` that accept selected values without `Equatable`
+  conformance. Existing `Equatable` APIs retain their local → global → default
+  comparison policy.
+- An iOS Simulator build in CI to compile UIKit integration alongside the
+  macOS build and serial tests.
 - Debug ambiguity warnings for single-result tag queries matching multiple
   cached instances. Results still use tag equality and return the newest
   matching instance. Warnings are deduplicated per ViewModel type using object
@@ -47,6 +58,22 @@ at commit [`c49171884eaa82b15888104ba7283f9bd422435b`](https://github.com/lwj199
 
 ### Fixed
 
+- Run `addDispose` callbacks and cancel owned Tasks when a ViewModel initializer
+  or builder throws before a handle takes ownership. Successful construction
+  leaves cleanup registered for normal disposal, and rollback remains idempotent.
+- Reserve creation indices before lifecycle callbacks can create another
+  instance of the same type, keeping newest/tag queries ordered during nested
+  `onCreate` and `onBind` resolution.
+- Ignore pause events from cancelled or removed provider subscriptions,
+  including removal followed by re-adding the same provider. New subscriptions
+  to disposed providers now finish immediately.
+- Release application notification observers when an `AppPauseProvider` is
+  deinitialized, without disposing providers shared by other bindings.
+- Use constant-time listener membership checks during notification dispatch,
+  preserving registration order, independent cancellation, and error isolation.
+- Release consumed state events during long reentrant cascades using an
+  amortized O(1) FIFO queue, so earlier state objects are not retained until
+  the entire cascade ends.
 - Deliver reentrant `setState` events in FIFO order. State changes immediately,
   but every remaining listener receives the current transition before a
   listener-triggered transition is dispatched. Each event keeps its original

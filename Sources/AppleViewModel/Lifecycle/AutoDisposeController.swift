@@ -9,7 +9,13 @@ public final class AutoDisposeController {
     private var blocks: [() -> Void] = []
     private var disposed = false
 
-    public init() {}
+    public init() {
+        // A throwing initializer can fail before any handle owns the ViewModel.
+        // Keep the cleanup controller alive until that construction either
+        // commits or rolls back; a weak capture may already be nil after ARC
+        // releases the partially initialized ViewModel.
+        registerViewModelConstructionRollback { self.dispose() }
+    }
 
     public func addDispose(_ block: @escaping () -> Void) {
         blocks.append(block)

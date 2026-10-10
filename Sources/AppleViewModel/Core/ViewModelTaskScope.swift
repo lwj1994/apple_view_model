@@ -18,7 +18,13 @@ public final class ViewModelTaskScope {
 
     var activeTaskCount: Int { cancellationHandlers.count }
 
-    init() {}
+    init() {
+        // Failed construction never reaches ViewModel.onDispose. A Task can
+        // retain its ViewModel (and this scope), so deinit alone cannot provide
+        // cancellation for that path. Hold the scope until commit/rollback and
+        // cancel immediately if the enclosing builder fails.
+        registerViewModelConstructionRollback { self.dispose() }
+    }
 
     /// Creates a main-actor Task owned by the ViewModel generation.
     ///

@@ -105,13 +105,26 @@ final class AutoDisposeInstanceController {
     }
 
     func unbind<Value: AnyObject>(_ value: Value) {
+        guard !disposed else { return }
         guard let (key, handle) = trackedHandles.first(where: { $0.value.anyValue === value }) else {
             return
         }
-        detachViewModelRef(handle: handle)
+        // Forget the old attachment before any owner/lifecycle callback can
+        // synchronously resolve it again. The binding hook also clears its
+        // old cache and subscriptions before dependency owner callbacks run.
         listenerDisposers.removeValue(forKey: key)?()
         trackedHandles.removeValue(forKey: key)
-        handle.unbindAny(bindingId: binding.id)
+        if let viewModel = handle.anyValue as? ViewModel {
+            onInstanceDetached?(handle, viewModel)
+            if trackedHandles[key] == nil, !viewModel.isDisposed {
+                viewModel.refHandler.removeRef(binding)
+            }
+        }
+        // A reentrant read has committed a new attachment and reused this
+        // direct source. Do not let the earlier unbind tear that source down.
+        if trackedHandles[key] == nil, !handle.isDisposedAny {
+            handle.unbindAny(bindingId: binding.id)
+        }
     }
 
     func dispose() {

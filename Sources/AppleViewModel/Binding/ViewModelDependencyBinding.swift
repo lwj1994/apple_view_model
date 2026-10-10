@@ -99,9 +99,28 @@ final class ViewModelDependencyBinding: ViewModelBinding {
     }
 
     private func handleDetached(_ handle: any _AnyHandle) {
-        dependencies.removeValue(forKey: ObjectIdentifier(handle))
-        // The controller requests onUpdate after removing its handle tracking.
-        // Keep teardown separate so a refresh can safely resolve a new child.
+        let identity = ObjectIdentifier(handle)
+        guard let entry = dependencies.removeValue(forKey: identity) else { return }
+        // Explicit unbind leaves the handle alive while removing this parent
+        // edge. Its propagated root sources must leave along with the direct
+        // dependency-binding source. A force-disposing handle has already
+        // cleared ownership and follows its normal disposal notifications.
+        guard !handle.isDisposedAny else { return }
+        for owner in Array(propagatedOwners) {
+            // Either ownership callback can synchronously read the child and
+            // install a new edge. Stop old cleanup as soon as that happens,
+            // including between ref removal and its matching handle unbind.
+            guard dependencies[identity] == nil else { break }
+            if !entry.viewModel.isDisposed {
+                entry.viewModel.refHandler.removeRef(owner, source: self)
+            }
+            guard dependencies[identity] == nil else { break }
+            if !handle.isDisposedAny {
+                handle.unbindAnyFrom(bindingId: owner.id, source: self)
+            }
+        }
+        // Explicit unbind only releases ownership; it does not request a
+        // parent notification or a host refresh.
     }
 
     private func requireAcyclicDependency(_ dependency: ViewModel) throws {
