@@ -112,19 +112,16 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
                     throw ViewModelError("no \(T.self) instance found")
                 }
                 // Expected key miss: fall through to the optional tag lookup.
-            } catch {
-                // Only a ViewModelError represents an expected cache miss.
-                throw error
             }
         }
-        if found == nil {
-            found = try InstanceManager.shared.get(
+        let vm: T
+        if let found {
+            vm = found
+        } else {
+            vm = try InstanceManager.shared.get(
                 T.self,
                 factory: InstanceFactory(arg: InstanceArg(tag: tag))
             )
-        }
-        guard let vm = found else {
-            throw ViewModelError("no \(T.self) instance found")
         }
         if vm.isDisposed {
             throw ViewModelError("\(T.self) is disposed")
@@ -151,8 +148,6 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
             return try readCached(key: key, tag: tag)
         } catch is ViewModelError {
             return nil
-        } catch {
-            throw error
         }
     }
 
@@ -284,34 +279,19 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     open func onCreate(_ arg: InstanceArg) {
         instanceArg = arg
         for lifecycle in Self._lifecycles {
-            do {
-                try runCatching { lifecycle.onCreate(self, arg: arg) }
-            } catch {
-                reportViewModelError(
-                    error, type: .lifecycle, context: "Lifecycle observer onCreate error")
-            }
+            lifecycle.onCreate(self, arg: arg)
         }
     }
 
     open func onBind(_ arg: InstanceArg, bindingId: String) {
         for lifecycle in Self._lifecycles {
-            do {
-                try runCatching { lifecycle.onBind(self, arg: arg, bindingId: bindingId) }
-            } catch {
-                reportViewModelError(
-                    error, type: .lifecycle, context: "Lifecycle observer onBind error")
-            }
+            lifecycle.onBind(self, arg: arg, bindingId: bindingId)
         }
     }
 
     open func onUnbind(_ arg: InstanceArg, bindingId: String) {
         for lifecycle in Self._lifecycles {
-            do {
-                try runCatching { lifecycle.onUnbind(self, arg: arg, bindingId: bindingId) }
-            } catch {
-                reportViewModelError(
-                    error, type: .lifecycle, context: "Lifecycle observer onUnbind error")
-            }
+            lifecycle.onUnbind(self, arg: arg, bindingId: bindingId)
         }
     }
 
@@ -319,38 +299,12 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
         isDisposed = true
         taskScopeStorage?.dispose()
         taskScopeStorage = nil
-        do {
-            try runCatching { autoDispose.dispose() }
-        } catch {
-            reportViewModelError(
-                error, type: .dispose, context: "\(type(of: self)) autoDispose error")
-        }
-        do {
-            try runCatching { dependencyBinding?.dispose() }
-        } catch {
-            reportViewModelError(
-                error, type: .dispose,
-                context: "\(type(of: self)) dependency binding dispose error")
-        }
-        do {
-            try runCatching { refHandler.dispose() }
-        } catch {
-            reportViewModelError(
-                error, type: .dispose, context: "\(type(of: self)) refHandler dispose error")
-        }
-        do {
-            try runCatching { dispose() }
-        } catch {
-            reportViewModelError(
-                error, type: .dispose, context: "\(type(of: self)) dispose() error")
-        }
+        autoDispose.dispose()
+        dependencyBinding?.dispose()
+        refHandler.dispose()
+        dispose()
         for lifecycle in Self._lifecycles {
-            do {
-                try runCatching { lifecycle.onDispose(self, arg: arg) }
-            } catch {
-                reportViewModelError(
-                    error, type: .dispose, context: "Lifecycle observer onDispose error")
-            }
+            lifecycle.onDispose(self, arg: arg)
         }
         listenerIDs.removeAll()
         listeners.removeAll()
@@ -358,12 +312,4 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
 
     /// Subclass hook for custom teardown. No `super` call needed; the base does nothing.
     open func dispose() {}
-
-    // MARK: - Private
-
-    /// Converts a non-throwing block into a `throws` context so errors from platform
-    /// APIs (e.g. `NSException` bridging) can be surfaced through a uniform `catch`.
-    private func runCatching(_ block: () throws -> Void) throws {
-        try block()
-    }
 }

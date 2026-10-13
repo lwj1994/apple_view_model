@@ -13,16 +13,27 @@ jobs:
   build:
 
     runs-on: macos-latest
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
     - uses: actions/checkout@v4
     - name: Build
       run: swift build -v
-    - name: Run tests
-      run: swift test --no-parallel -v
+    - name: Run tests with coverage
+      run: bash scripts/test-coverage.sh
     - name: Build iOS Simulator
       run: >-
         xcodebuild -scheme AppleViewModel
         -destination 'generic/platform=iOS Simulator'
         -derivedDataPath "$RUNNER_TEMP/apple-view-model-ios"
         CODE_SIGNING_ALLOWED=NO build
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+      with:
+        use_oidc: true
+        files: .build/coverage.lcov
+        disable_search: true
+        plugins: noop
+        fail_ci_if_error: true
