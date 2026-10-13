@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   lifecycle APIs remain unchanged.
 - Validate dependency edges and install cache/disposal tracking before binding,
   allowing reentrant reads and watches from onBind to reuse the same generation.
+- Remove unreachable error wrappers around non-throwing lifecycle and disposal
+  callbacks; genuinely throwing listeners and factory errors retain their handling.
 
 ### Fixed
 
@@ -31,6 +33,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- Codecov coverage reporting for serial macOS tests in CI, with a reusable LCOV
+  export script, 100% source line coverage checks, and a README badge.
+- Tests for parameterized spec builders and overrides, registry and ownership
+  edge cases, mounted SwiftUI wrappers/selectors, and fail-fast contracts in
+  serial subprocesses with crash-safe coverage profiling.
 - Ownership commit regression tests covering callback consistency, reentrant
   resolution/disposal, cycle rejection, stale notifications, batch rollback,
   dependency reattachment, and shared-generation survival.

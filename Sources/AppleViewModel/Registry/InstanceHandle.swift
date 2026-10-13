@@ -224,42 +224,22 @@ final class InstanceHandle<Value: AnyObject> {
 
     private func notifyCreate(arg: InstanceArg) {
         guard let lifecycle = value as? InstanceLifeCycle else { return }
-        do {
-            try runCatching { lifecycle.onCreate(arg) }
-        } catch {
-            reportViewModelError(
-                error, type: .lifecycle, context: "\(type(of: lifecycle)) onCreate error")
-        }
+        lifecycle.onCreate(arg)
     }
 
     private func notifyBind(id: String) {
         guard let lifecycle = value as? InstanceLifeCycle else { return }
-        do {
-            try runCatching { lifecycle.onBind(arg, bindingId: id) }
-        } catch {
-            reportViewModelError(
-                error, type: .lifecycle, context: "\(type(of: lifecycle)) onBind error")
-        }
+        lifecycle.onBind(arg, bindingId: id)
     }
 
     private func notifyUnbind(id: String) {
         guard let lifecycle = value as? InstanceLifeCycle else { return }
-        do {
-            try runCatching { lifecycle.onUnbind(arg, bindingId: id) }
-        } catch {
-            reportViewModelError(
-                error, type: .lifecycle, context: "\(type(of: lifecycle)) onUnbind error")
-        }
+        lifecycle.onUnbind(arg, bindingId: id)
     }
 
     private func callInstanceDispose(_ target: Value?) {
         guard let lifecycle = target as? InstanceLifeCycle else { return }
-        do {
-            try runCatching { lifecycle.onDispose(arg) }
-        } catch {
-            reportViewModelError(
-                error, type: .dispose, context: "\(type(of: lifecycle)) onDispose error")
-        }
+        lifecycle.onDispose(arg)
     }
 
     private func notifyListeners() {
@@ -276,11 +256,5 @@ final class InstanceHandle<Value: AnyObject> {
                 )
             }
         }
-    }
-
-    /// Wrap a non-throwing block inside `try`/`catch` so future throwing APIs
-    /// can surface via a uniform code path without touching every call site.
-    private func runCatching(_ block: () throws -> Void) throws {
-        try block()
     }
 }

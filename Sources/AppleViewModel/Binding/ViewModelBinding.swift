@@ -458,9 +458,7 @@ open class ViewModelBinding {
         factory: any ViewModelFactory<VM>,
         listen: Bool
     ) throws -> VM {
-        guard !isDisposed else {
-            throw ViewModelError("Cannot create \(VM.self): binding is disposed.")
-        }
+        // getViewModel validates liveness immediately before entering this path.
         let configuredKey = factory.key()
         let aliveForever = factory.aliveForever()
         if let validationError = Self.aliveForeverKeyValidationError(

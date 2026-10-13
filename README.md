@@ -3,6 +3,7 @@
 [![](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Flwj1994%2Fapple_view_model%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/lwj1994/apple_view_model)
 [![](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Flwj1994%2Fapple_view_model%2Fbadge%3Ftype%3Dplatforms)](https://swiftpackageindex.com/lwj1994/apple_view_model)
 [![](https://img.shields.io/github/v/release/lwj1994/apple_view_model?label=release)](https://github.com/lwj1994/apple_view_model/releases)
+[![codecov](https://codecov.io/gh/lwj1994/apple_view_model/branch/main/graph/badge.svg)](https://app.codecov.io/gh/lwj1994/apple_view_model)
 
 > 📖 Changelog: [CHANGELOG](./CHANGELOG.md) · Releases: [GitHub Releases](https://github.com/lwj1994/apple_view_model/releases)
 
@@ -627,6 +628,31 @@ swift test --no-parallel
 Do not enable `--parallel`, test sharding, or concurrent suites. The registry,
 global configuration, lifecycle observers, and spec proxies are mutable
 process-global state that tests reset between cases.
+
+To run the same coverage check as CI on macOS:
+
+```bash
+bash scripts/test-coverage.sh
+```
+
+This runs the tests serially with process-local debug logging enabled and exports
+`.build/coverage.lcov`, excluding test code and generated build files.
+Coverage reflects code compiled for macOS;
+the separate iOS Simulator build checks compilation, not runtime coverage.
+CI uploads the report to [Codecov](https://app.codecov.io/gh/lwj1994/apple_view_model)
+on pushes and pull requests to `main`. The local script and Codecov project/patch
+checks require **100% source line coverage**; upload errors also fail CI.
+
+Fail-fast contracts are tested in isolated child processes, one at a time.
+On coverage runs these use [LLVM continuous profiling](https://clang.llvm.org/docs/SourceBasedCodeCoverage.html#running-the-instrumented-program)
+to retain counters after an expected trap; SwiftPM merges the child profiles
+into the same report. The parent test suite still runs serially.
+
+Repository setup: enable `lwj1994/apple_view_model` in Codecov and grant the
+Codecov GitHub App access for PR checks. Uploads use
+[GitHub OIDC](https://github.com/codecov/codecov-action#using-oidc), so no
+`CODECOV_TOKEN` secret is needed. The badge appears after the first successful
+upload from `main`.
 
 ```swift
 func test_with_mock() {
