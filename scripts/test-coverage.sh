@@ -8,8 +8,16 @@ OS_ACTIVITY_MODE=debug swift test --no-parallel --enable-code-coverage
 
 build_dir="$(swift build --show-bin-path)"
 # SwiftPM's native and Swift Build backends use different test bundle names.
-test_binaries=("$build_dir"/*.xctest/Contents/MacOS/*)
-if [[ ${#test_binaries[@]} -ne 1 || ! -f "${test_binaries[0]}" ]]; then
+# Resolve each bundle's executable explicitly; native builds also put a .dSYM
+# directory beside it, which must not be counted as another executable.
+test_binaries=()
+for test_bundle in "$build_dir"/*.xctest; do
+  test_binary="$test_bundle/Contents/MacOS/$(basename "$test_bundle" .xctest)"
+  if [[ -f "$test_binary" ]]; then
+    test_binaries+=("$test_binary")
+  fi
+done
+if [[ ${#test_binaries[@]} -ne 1 ]]; then
   echo "Expected one XCTest executable in $build_dir" >&2
   exit 1
 fi
