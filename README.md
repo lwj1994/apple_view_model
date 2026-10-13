@@ -535,6 +535,14 @@ such as `vm.previousState?.count`, remains valid.
 - `ViewModel.reset()` force-disposes every cached generation (including retained instances), rejects reentrant creation while teardown is running, clears global configuration and lifecycle observers, and permits clean re-initialization.
 - Direct and parent-propagated paths are source-aware. `onBind` runs for the first source of a visible binding id, and `onUnbind` for the last source.
 
+Managed ownership updates commit the handle's sources and the ViewModel's owner
+records before lifecycle or owner-change callbacks run. Dependency-cycle
+validation and disposal tracking precede the first `onBind` callback, so
+reentrant `watch(spec)` / `read(spec)` can resolve the same registered generation.
+A rejected dependency edge does not emit bind/unbind callbacks. Tag batches
+validate every edge before attaching; a failure releases only that batch's new
+registrations, preserving pre-existing ownership and reentrant replacements.
+
 There is no in-place instance replacement API. To obtain an independent instance, use a new explicit key. If replacing the shared cached generation globally is intentional, call `recycle(vm)` and let resolver properties call `watch(spec)` / `read(spec)` again. The cache miss creates a new handle and dependency tree; owner paths, watch/listen subscriptions, and dependency edges are not migrated from the disposed object.
 
 Construction and dependency graphs are checked. Recursive construction, runtime ownership cycles, and every unkeyed `aliveForever` spec fail fast on the main actor. Failed initializers and builders roll back their dependency scopes, run registered `addDispose` cleanup, and cancel their owned Tasks before the error escapes through `readThrowing/watchThrowing`.

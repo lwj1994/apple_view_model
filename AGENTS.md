@@ -34,6 +34,21 @@ Sources/AppleViewModel/
 7. **稳定 spec 的 `watch/read` 是主入口**。两者都会创建/获取、bind 并观察 handle disposal；只有 `watch` 监听 VM 自身通知。即使 spec 带 key/tag，也继续传 spec；cached API 只查询其他路径已创建的实例，是高级 escape hatch，不能与主入口并列推荐或替代 spec-based 解析。README、Skill、示例与公开 API 注释都必须保持这个优先级。
 8. **不提供原位替换实例的 `recreate` API**。需要独立新实例时使用显式新 key；若明确接受影响所有 owners，则先全局 `recycle`，再由 resolver getter 通过 `watch/read(spec)` 走正常 cache-miss 路径创建新 handle 与 dependency tree，不迁移旧对象关系。
 
+## 所有权提交与重入
+
+- 受管路径统一通过 `InstanceHandle.bindOwner/unbindOwner` 修改 handle sources
+  和 VM refHandler；两边先提交，再派发生命周期与 owner 通知。不要在 controller 或
+  dependency binding 中分别调用 bind/addRef、removeRef/unbind。
+- 新连接先判环、登记依赖边和 handle disposal listener，再执行首次 onBind。
+  Store 先登记新 handle 和缓存清理监听，再进入统一 attachment。
+- 每次 controller registration 与 parent-child edge 都有独立身份。旧清理和批量
+  回滚只能释放本次创建的连接，不能移除回调重入后建立的新连接。
+- 保持 Apple 的解绑顺序：先释放该依赖边传播的 root sources，再释放 dependency
+  binding 的直接 source；显式 unbind 不请求刷新。回调重新解析后，旧操作不得再释放
+  新 registration 复用的直接 source。
+- tag batch 先预检全部依赖边；失败只回滚本批新 registration。owner 列表从 source
+  ledger 的加入顺序派生，通知使用 revision 阻止旧快照在重入后继续派发。
+
 ## 边界（明确不做的）
 
 - DevTools / 远程调试可视化（对应 Dart 的 `view_model_devtools_extension`）。

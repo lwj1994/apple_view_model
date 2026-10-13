@@ -68,22 +68,14 @@ final class Store<Value: AnyObject> {
         return count
     }
 
-    /// Get-or-create. Mirrors the Dart `getNotifier`:
-    /// 1. Look up `factory.arg.key` in the cache; if present, record an extra
-    ///    `bind(bindingId)` when supplied and return it.
-    /// 2. Otherwise run the builder, register the new handle, and subscribe so we
-    ///    can remove it from the cache on dispose.
+    /// Resolve from the cache or construct and register a new generation.
+    /// Managed callers attach through onResolve after cache eviction tracking
+    /// is installed, so onBind can safely reenter resolution or disposal.
     @discardableResult
-    func getHandle(factory: InstanceFactory<Value>) throws -> InstanceHandle<Value> {
-        try resolveHandle(factory: factory).handle
-    }
-
-    /// Same resolution as `getHandle`, with creation provenance used to make
-    /// failed attachment rollback safe for newly-created `aliveForever`
-    /// generations without recycling an older retained cache hit.
-    func resolveHandle(
-        factory: InstanceFactory<Value>
-    ) throws -> (handle: InstanceHandle<Value>, wasCreated: Bool) {
+    func getHandle(
+        factory: InstanceFactory<Value>,
+        onResolve: ((InstanceHandle<Value>) throws -> Void)? = nil
+    ) throws -> InstanceHandle<Value> {
         guard !disposed else {
             throw ViewModelError("Store<\(Value.self)> has been disposed.")
         }
@@ -99,8 +91,12 @@ final class Store<Value: AnyObject> {
         if let cached = handles[realKey] {
             // A visible owner id can reach this handle directly and through a
             // parent. bind() records the direct source independently.
-            cached.bind(bindingId)
-            return (cached, false)
+            if let onResolve {
+                try onResolve(cached)
+            } else {
+                cached.bind(bindingId)
+            }
+            return cached
         }
 
         guard let builder = factory.builder else {
@@ -128,7 +124,8 @@ final class Store<Value: AnyObject> {
             return InstanceHandle<Value>(
                 value: instance,
                 arg: arg,
-                index: creationIndex
+                index: creationIndex,
+                bindOnCreate: onResolve == nil
             )
         }
         if disposed {
@@ -151,7 +148,17 @@ final class Store<Value: AnyObject> {
             }
         }
 
-        return (created, true)
+        do {
+            try onResolve?(created)
+        } catch {
+            // Only this cache-miss generation is tentative. A reentrant owner
+            // may already have claimed it; preserve that owner's generation.
+            if !created.isDisposed, created.bindingIds.isEmpty {
+                created.unbindAll(force: true)
+            }
+            throw error
+        }
+        return created
     }
 
     func tryRecycle(_ target: AnyObject) -> Bool {

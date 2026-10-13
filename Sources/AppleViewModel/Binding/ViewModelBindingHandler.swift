@@ -5,6 +5,7 @@ import Foundation
 public final class ViewModelBindingHandler {
     private struct OwnerEntry {
         let binding: ViewModelBinding
+        let order: Int
         var sources: Set<ObjectIdentifier>
     }
 
@@ -13,18 +14,23 @@ public final class ViewModelBindingHandler {
         let callback: ([String], String?, String?) throws -> Void
     }
 
-    private var dependencyBindings: [ViewModelBinding] = []
     private var refSources: [ObjectIdentifier: OwnerEntry] = [:]
+    private var nextOwnerOrder = 0
+    private var ownerRevision = 0
     private var ownerChangeListeners: [OwnerListenerEntry] = []
 
     public init() {}
 
     @_spi(Internal)
-    public var owners: [ViewModelBinding] { dependencyBindings }
+    public var owners: [ViewModelBinding] {
+        // Swift dictionaries do not preserve insertion order. Keep that order
+        // in the source ledger instead of maintaining a second owner list.
+        refSources.values.sorted { $0.order < $1.order }.map(\.binding)
+    }
 
     @_spi(Internal)
     public var externalOwners: [ViewModelBinding] {
-        dependencyBindings.filter { !$0.isDependencyBinding }
+        owners.filter { !$0.isDependencyBinding }
     }
 
     @_spi(Internal)
@@ -40,7 +46,9 @@ public final class ViewModelBindingHandler {
     }
 
     @_spi(Internal)
-    public var primaryOwner: ViewModelBinding? { dependencyBindings.first }
+    public var primaryOwner: ViewModelBinding? {
+        refSources.values.min { $0.order < $1.order }?.binding
+    }
 
     /// Whether this binding has its own reference, independently of parents.
     func hasDirectRef(_ binding: ViewModelBinding) -> Bool {
@@ -62,42 +70,66 @@ public final class ViewModelBindingHandler {
 
     @_spi(Internal)
     public func addRef(_ binding: ViewModelBinding, source: AnyObject? = nil) {
+        commitAddRef(binding, source: source)?()
+    }
+
+    /// Commit without calling user code. The handle publishes only after both
+    /// ownership ledgers agree.
+    func commitAddRef(_ binding: ViewModelBinding, source: AnyObject? = nil) -> (() -> Void)? {
         let previousPrimaryOwner = primaryOwner?.id
         let bindingIdentity = ObjectIdentifier(binding)
         let sourceIdentity = ObjectIdentifier(source ?? binding)
-        var entry = refSources[bindingIdentity]
-            ?? OwnerEntry(binding: binding, sources: [])
-        guard entry.sources.insert(sourceIdentity).inserted else { return }
+        var entry: OwnerEntry
+        if let existing = refSources[bindingIdentity] {
+            entry = existing
+        } else {
+            entry = OwnerEntry(binding: binding, order: nextOwnerOrder, sources: [])
+            nextOwnerOrder += 1
+        }
+        guard entry.sources.insert(sourceIdentity).inserted else { return nil }
         let isFirstSource = entry.sources.count == 1
         refSources[bindingIdentity] = entry
-        if isFirstSource {
-            dependencyBindings.append(binding)
-            notifyOwnerChanges(previousPrimaryOwner: previousPrimaryOwner)
-        }
+        return isFirstSource ? ownerChange(previousPrimaryOwner: previousPrimaryOwner) : nil
     }
 
     @_spi(Internal)
     public func removeRef(_ binding: ViewModelBinding, source: AnyObject? = nil) {
+        commitRemoveRef(binding, source: source)?()
+    }
+
+    func commitRemoveRef(_ binding: ViewModelBinding, source: AnyObject? = nil) -> (() -> Void)? {
         let previousPrimaryOwner = primaryOwner?.id
         let bindingIdentity = ObjectIdentifier(binding)
         let sourceIdentity = ObjectIdentifier(source ?? binding)
-        guard var entry = refSources[bindingIdentity] else { return }
-        guard entry.sources.remove(sourceIdentity) != nil else { return }
+        guard var entry = refSources[bindingIdentity] else { return nil }
+        guard entry.sources.remove(sourceIdentity) != nil else { return nil }
         if !entry.sources.isEmpty {
             refSources[bindingIdentity] = entry
-            return
+            return nil
         }
         refSources.removeValue(forKey: bindingIdentity)
-        dependencyBindings.removeAll { $0 === binding }
-        notifyOwnerChanges(previousPrimaryOwner: previousPrimaryOwner)
+        return ownerChange(previousPrimaryOwner: previousPrimaryOwner)
+    }
+
+    func commitClearRefs() -> (() -> Void)? {
+        guard !refSources.isEmpty else { return nil }
+        let previousPrimaryOwner = primaryOwner?.id
+        refSources.removeAll()
+        return ownerChange(previousPrimaryOwner: previousPrimaryOwner)
+    }
+
+    private func ownerChange(previousPrimaryOwner: String?) -> () -> Void {
+        ownerRevision += 1
+        let revision = ownerRevision
+        return { [weak self] in
+            guard let self, revision == self.ownerRevision else { return }
+            self.notifyOwnerChanges(previousPrimaryOwner: previousPrimaryOwner, revision: revision)
+        }
     }
 
     @_spi(Internal)
     public func dispose() {
-        let previousPrimaryOwner = primaryOwner?.id
-        dependencyBindings.removeAll()
-        refSources.removeAll()
-        notifyOwnerChanges(previousPrimaryOwner: previousPrimaryOwner)
+        commitClearRefs()?()
         ownerChangeListeners.removeAll()
     }
 
@@ -110,12 +142,15 @@ public final class ViewModelBindingHandler {
         )
     }
 
-    private func notifyOwnerChanges(previousPrimaryOwner: String?) {
+    private func notifyOwnerChanges(previousPrimaryOwner: String?, revision: Int) {
         guard !ownerChangeListeners.isEmpty else { return }
-        let ownerIds = dependencyBindings.map(\.id)
+        let ownerIds = owners.map(\.id)
         let currentPrimaryOwner = primaryOwner?.id
         let snapshot = ownerChangeListeners
         for entry in snapshot {
+            // A callback may commit and publish a newer transition. Stop the
+            // stale fan-out rather than deliver its obsolete owner snapshot.
+            guard revision == ownerRevision else { break }
             guard ownerChangeListeners.contains(where: { $0.id == entry.id }) else {
                 continue
             }

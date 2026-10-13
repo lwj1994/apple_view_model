@@ -106,26 +106,14 @@ public final class InstanceManager {
         return false
     }
 
-    /// Unified handle resolver.
-    ///
-    /// - Empty factory (no builder, no key): find the newest handle, optionally
-    ///   filtered by tag, and attach a new `bindingId` if one was supplied.
-    /// - Non-empty factory: delegate to `Store.getHandle`.
+    /// Unified handle resolver. Managed callers supply onResolve to validate
+    /// and commit attachment before any ownership callbacks are published.
     @discardableResult
     func getHandle<Value: AnyObject>(
         _ type: Value.Type,
-        factory: InstanceFactory<Value>? = nil
+        factory: InstanceFactory<Value>? = nil,
+        onResolve: ((InstanceHandle<Value>) throws -> Void)? = nil
     ) throws -> InstanceHandle<Value> {
-        try resolveHandle(type, factory: factory).handle
-    }
-
-    /// Resolve a handle and report whether this call created its generation.
-    /// Attachment rollback uses the provenance to force-dispose only a newly
-    /// created retained value, never an older `aliveForever` cache hit.
-    func resolveHandle<Value: AnyObject>(
-        _ type: Value.Type,
-        factory: InstanceFactory<Value>? = nil
-    ) throws -> (handle: InstanceHandle<Value>, wasCreated: Bool) {
         try requireNotResetting()
         if factory == nil || factory!.isEmpty {
             let bindingId = factory?.arg.bindingId
@@ -150,11 +138,12 @@ public final class InstanceManager {
                         aliveForever: found.arg.aliveForever
                     )
                 )
-                return try store.resolveHandle(factory: extendFactory)
+                return try store.getHandle(factory: extendFactory, onResolve: onResolve)
             }
-            return (found, false)
+            try onResolve?(found)
+            return found
         }
-        return try store(for: type).resolveHandle(factory: factory!)
+        return try store(for: type).getHandle(factory: factory!, onResolve: onResolve)
     }
 
     /// All handles that currently carry `tag` for the requested type.

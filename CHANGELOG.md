@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+
+- Centralize managed ownership changes in the handle. Both handle sources and
+  ViewModel owner records are committed before lifecycle/owner callbacks run;
+  owner ordering is derived from the source ledger. Public resolution and
+  lifecycle APIs remain unchanged.
+- Validate dependency edges and install cache/disposal tracking before binding,
+  allowing reentrant reads and watches from onBind to reuse the same generation.
+
+### Fixed
+
+- Reject cyclic dependencies before ownership callbacks and prevent older owner
+  snapshots from being delivered after a reentrant ownership change.
+- Give each dependency attachment and controller registration its own identity,
+  so old cleanup cannot remove a replacement installed by reentrant resolution.
+  Preserve Apple's propagated-root-before-dependency unbind order and silent
+  explicit unbind behavior.
+- Preflight tag batches and roll back only registrations acquired by a failed
+  batch, preserving prior ownership and reentrant replacement subscriptions.
+- Reclaim unowned tentative generations after failed attachment, including
+  aliveForever instances, while retaining generations claimed by another owner.
+  Evict recycled parents before publishing propagated owner removals.
+
+### Added
+
+- Ownership commit regression tests covering callback consistency, reentrant
+  resolution/disposal, cycle rejection, stale notifications, batch rollback,
+  dependency reattachment, and shared-generation survival.
+
 ## [0.11.0] - 2026-10-10
 
 Aligns the resolution-cache, cached-query, and listener contracts with

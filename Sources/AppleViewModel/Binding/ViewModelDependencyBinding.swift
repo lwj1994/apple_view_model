@@ -3,9 +3,15 @@ import Foundation
 /// Stable dependency and lifecycle scope owned by one parent object generation.
 @MainActor
 final class ViewModelDependencyBinding: ViewModelBinding {
-    private struct DependencyEntry {
+    // Each attachment owns a distinct token, including reattachment of the same handle.
+    private final class DependencyEntry {
         let handle: any _AnyHandle
         let viewModel: ViewModel
+
+        init(handle: any _AnyHandle, viewModel: ViewModel) {
+            self.handle = handle
+            self.viewModel = viewModel
+        }
     }
 
     private weak var parent: ViewModel?
@@ -25,8 +31,11 @@ final class ViewModelDependencyBinding: ViewModelBinding {
 
         propagatedOwners = parentHandler.constructionExternalOwners
         installDependencyHooks(
+            attaching: { [weak self] _, viewModel in
+                try self?.requireAcyclicDependency(viewModel)
+            },
             attached: { [weak self] handle, viewModel in
-                try self?.handleAttached(handle, viewModel: viewModel)
+                self?.handleAttached(handle, viewModel: viewModel)
             },
             detached: { [weak self] handle, _ in
                 self?.handleDetached(handle)
@@ -59,68 +68,37 @@ final class ViewModelDependencyBinding: ViewModelBinding {
         dependencyDisposed = true
         removeOwnerListener?()
         removeOwnerListener = nil
-        for owner in propagatedOwners {
-            for entry in Array(dependencies.values) {
-                detachOwner(entry.handle, viewModel: entry.viewModel, owner: owner)
-            }
-        }
-        propagatedOwners.removeAll()
+        // The base marks this binding disposed before releasing any owners.
+        // Its controller releases each edge together with propagated sources.
         super.dispose()
+        propagatedOwners.removeAll()
         dependencies.removeAll()
     }
 
     private func handleAttached(
         _ handle: any _AnyHandle,
         viewModel: ViewModel
-    ) throws {
-        try requireAcyclicDependency(viewModel)
-        let key = ObjectIdentifier(handle)
-        dependencies[key] = DependencyEntry(handle: handle, viewModel: viewModel)
-        for owner in propagatedOwners {
-            attachOwner(handle, viewModel: viewModel, owner: owner)
-        }
-        guard
-            !dependencyDisposed,
-            !handle.isDisposedAny,
-            !viewModel.isDisposed
-        else {
-            // An `onBind` callback may synchronously recycle the child or tear
-            // down this dependency scope before attachment commits. The handle
-            // listener is not installed yet, so clean the provisional graph
-            // entry explicitly and let the controller roll back its direct path.
-            dependencies.removeValue(forKey: key)
-            for owner in propagatedOwners {
-                detachOwner(handle, viewModel: viewModel, owner: owner)
+    ) -> (() -> Void)? {
+        let entry = DependencyEntry(handle: handle, viewModel: viewModel)
+        dependencies[ObjectIdentifier(handle)] = entry
+        return { [weak self] in
+            guard let self else { return }
+            for owner in Array(self.propagatedOwners) {
+                self.attachOwner(entry, owner: owner)
             }
-            throw ViewModelError(
-                "Cannot attach \(type(of: viewModel)): dependency was disposed during resolution."
-            )
         }
     }
 
-    private func handleDetached(_ handle: any _AnyHandle) {
-        let identity = ObjectIdentifier(handle)
-        guard let entry = dependencies.removeValue(forKey: identity) else { return }
-        // Explicit unbind leaves the handle alive while removing this parent
-        // edge. Its propagated root sources must leave along with the direct
-        // dependency-binding source. A force-disposing handle has already
-        // cleared ownership and follows its normal disposal notifications.
-        guard !handle.isDisposedAny else { return }
-        for owner in Array(propagatedOwners) {
-            // Either ownership callback can synchronously read the child and
-            // install a new edge. Stop old cleanup as soon as that happens,
-            // including between ref removal and its matching handle unbind.
-            guard dependencies[identity] == nil else { break }
-            if !entry.viewModel.isDisposed {
-                entry.viewModel.refHandler.removeRef(owner, source: self)
+    private func handleDetached(_ handle: any _AnyHandle) -> (() -> Void)? {
+        guard let entry = dependencies.removeValue(forKey: ObjectIdentifier(handle)) else { return nil }
+        let owners = propagatedOwners
+        return { [weak self] in
+            guard let self else { return }
+            for owner in owners {
+                self.detachOwner(entry, owner: owner)
             }
-            guard dependencies[identity] == nil else { break }
-            if !handle.isDisposedAny {
-                handle.unbindAnyFrom(bindingId: owner.id, source: self)
-            }
+            // Explicit unbind releases ownership without requesting a refresh.
         }
-        // Explicit unbind only releases ownership; it does not request a
-        // parent notification or a host refresh.
     }
 
     private func requireAcyclicDependency(_ dependency: ViewModel) throws {
@@ -167,54 +145,35 @@ final class ViewModelDependencyBinding: ViewModelBinding {
             !propagatedOwners.contains { $0 === owner }
         }
 
+        // Commit this projection before child callbacks can reenter sync.
+        propagatedOwners = currentOwners
         for owner in removed {
             for entry in Array(dependencies.values) {
-                detachOwner(entry.handle, viewModel: entry.viewModel, owner: owner)
+                guard !propagatedOwners.contains(where: { $0 === owner }) else { break }
+                detachOwner(entry, owner: owner)
             }
-            propagatedOwners.removeAll { $0 === owner }
         }
         for owner in added {
-            propagatedOwners.append(owner)
             for entry in Array(dependencies.values) {
-                attachOwner(entry.handle, viewModel: entry.viewModel, owner: owner)
+                attachOwner(entry, owner: owner)
             }
         }
     }
 
-    private func attachOwner(
-        _ handle: any _AnyHandle,
-        viewModel: ViewModel,
-        owner: ViewModelBinding
-    ) {
-        guard !handle.isDisposedAny, !viewModel.isDisposed else { return }
-        // Register both sides before considering the propagation committed.
-        // Either callback can synchronously dispose/remove `owner`; the final
-        // membership check rolls back both sides if reentrancy invalidated it.
-        viewModel.refHandler.addRef(owner, source: self)
-        handle.bindAnyFrom(bindingId: owner.id, source: self)
-
-        let dependencyStillAttached = dependencies[ObjectIdentifier(handle)] != nil
-        let ownerStillPropagated = propagatedOwners.contains { $0 === owner }
-        if dependencyDisposed
-            || owner.isDisposed
-            || !dependencyStillAttached
-            || !ownerStillPropagated
-            || handle.isDisposedAny
-            || viewModel.isDisposed {
-            detachOwner(handle, viewModel: viewModel, owner: owner)
-        }
+    private func attachOwner(_ entry: DependencyEntry, owner: ViewModelBinding) {
+        guard
+            !dependencyDisposed,
+            !entry.handle.isDisposedAny,
+            !entry.viewModel.isDisposed,
+            !owner.isDisposed,
+            dependencies[ObjectIdentifier(entry.handle)] === entry,
+            propagatedOwners.contains(where: { $0 === owner })
+        else { return }
+        // The synchronous preflight above covers bindOwner's rejection cases.
+        try? entry.handle.bindOwnerAny(owner, source: entry)
     }
 
-    private func detachOwner(
-        _ handle: any _AnyHandle,
-        viewModel: ViewModel,
-        owner: ViewModelBinding
-    ) {
-        if !viewModel.isDisposed {
-            viewModel.refHandler.removeRef(owner, source: self)
-        }
-        if !handle.isDisposedAny {
-            handle.unbindAnyFrom(bindingId: owner.id, source: self)
-        }
+    private func detachOwner(_ entry: DependencyEntry, owner: ViewModelBinding) {
+        entry.handle.unbindOwnerAny(owner, source: entry)
     }
 }

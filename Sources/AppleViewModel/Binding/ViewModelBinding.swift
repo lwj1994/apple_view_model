@@ -70,8 +70,9 @@ open class ViewModelBinding {
     /// Set to true when a notification arrives while we are paused. Drained on resume.
     private var hasMissedUpdates: Bool = false
 
-    private var instanceAttachedHook: ((any _AnyHandle, ViewModel) throws -> Void)?
-    private var instanceDetachedHook: ((any _AnyHandle, ViewModel) -> Void)?
+    private var instanceAttachingHook: ((any _AnyHandle, ViewModel) throws -> Void)?
+    private var instanceAttachedHook: ((any _AnyHandle, ViewModel) -> (() -> Void)?)?
+    private var instanceDetachedHook: ((any _AnyHandle, ViewModel) -> (() -> Void)?)?
     private var viewModelUpdateHook: ((ViewModel) -> Void)?
     private let defaultViewModelKey = AnyHashable(ViewModelPrivateKey())
 
@@ -89,8 +90,11 @@ open class ViewModelBinding {
         AutoDisposeInstanceController(
             binding: self,
             onHandleDisposing: { [weak self] in self?.handleInstanceChange() },
+            onInstanceAttaching: { [weak self] handle, viewModel in
+                try self?.instanceAttachingHook?(handle, viewModel)
+            },
             onInstanceAttached: { [weak self] handle, viewModel in
-                try self?.handleInstanceAttached(handle, viewModel: viewModel)
+                self?.instanceAttachedHook?(handle, viewModel)
             },
             onInstanceDetached: { [weak self] handle, viewModel in
                 self?.handleInstanceDetached(handle, viewModel: viewModel)
@@ -118,11 +122,7 @@ open class ViewModelBinding {
         if markViewModelBindingUpdated(self) { onUpdate() }
     }
 
-    private func handleInstanceAttached(_ handle: any _AnyHandle, viewModel: ViewModel) throws {
-        try instanceAttachedHook?(handle, viewModel)
-    }
-
-    private func handleInstanceDetached(_ handle: any _AnyHandle, viewModel: ViewModel) {
+    private func handleInstanceDetached(_ handle: any _AnyHandle, viewModel: ViewModel) -> (() -> Void)? {
         if let identity = resolvedHandleIdentities.removeValue(forKey: ObjectIdentifier(handle)),
            resolvedHandles[identity] === handle {
             resolvedHandles.removeValue(forKey: identity)
@@ -133,7 +133,7 @@ open class ViewModelBinding {
             subscription.dispose()
             subscriptions.removeAll { $0 === subscription }
         }
-        instanceDetachedHook?(handle, viewModel)
+        return instanceDetachedHook?(handle, viewModel)
     }
 
     /// Override to install default pause providers for a subclass.
@@ -545,10 +545,12 @@ open class ViewModelBinding {
     }
 
     func installDependencyHooks(
-        attached: @escaping (any _AnyHandle, ViewModel) throws -> Void,
-        detached: @escaping (any _AnyHandle, ViewModel) -> Void,
+        attaching: @escaping (any _AnyHandle, ViewModel) throws -> Void,
+        attached: @escaping (any _AnyHandle, ViewModel) -> (() -> Void)?,
+        detached: @escaping (any _AnyHandle, ViewModel) -> (() -> Void)?,
         updated: @escaping (ViewModel) -> Void
     ) {
+        instanceAttachingHook = attaching
         instanceAttachedHook = attached
         instanceDetachedHook = detached
         viewModelUpdateHook = updated

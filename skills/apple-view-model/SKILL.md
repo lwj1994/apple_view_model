@@ -528,6 +528,12 @@ See `examples/sharing_example.swift` for the complete example.
   instances, blocks reentrant resolution during teardown, clears configuration
   and lifecycle observers, and allows initialization again.
 
+Managed ownership is committed before lifecycle/owner callbacks. Dependency
+validation and disposal tracking precede the first onBind, permitting reentrant
+spec resolution of the registered generation. Cyclic edges are rejected before
+bind/unbind side effects. A failed tag batch rolls back only its newly acquired
+registrations; pre-existing ownership and reentrant replacements survive.
+
 Lifecycle hooks are `onCreate`, `onBind`, `onUnbind`, and `onDispose`. Register
 owned resources with `addDispose` and let the framework invoke cleanup.
 

@@ -3,7 +3,7 @@ import Foundation
 /// Reference-counted wrapper around a single managed instance (typically a `ViewModel`).
 ///
 /// Responsibilities, mirrored from the Dart `InstanceHandle`:
-/// - invoke `onCreate` once the value is stored,
+/// - invoke `onCreate` during construction,
 /// - maintain the `bindingIds` reference-count list,
 /// - auto-dispose when `bindingIds` reaches zero (unless `aliveForever`).
 @MainActor
@@ -34,17 +34,19 @@ final class InstanceHandle<Value: AnyObject> {
     private var listeners: [ListenerEntry] = []
     private var disposing = false
     private var disposed = false
+    private var pendingOwnerChange: (() -> Void)?
 
     init(
         value: Value,
         arg: InstanceArg,
-        index: Int
+        index: Int,
+        bindOnCreate: Bool = true
     ) {
         self.value = value
         self.arg = arg
         self.index = index
         notifyCreate(arg: arg)
-        if let initialId = arg.bindingId {
+        if bindOnCreate, let initialId = arg.bindingId {
             bind(initialId)
         }
     }
@@ -84,6 +86,49 @@ final class InstanceHandle<Value: AnyObject> {
         if sources.count == 1 { notifyBind(id: id) }
     }
 
+    /// Single write path for managed ownership. Commit both ledgers before
+    /// lifecycle or owner callbacks can resolve/unbind the instance again.
+    func bindOwner(_ owner: ViewModelBinding, source: AnyObject? = nil) throws {
+        guard !isDisposed, !owner.isDisposed else {
+            throw ViewModelError("Cannot bind a disposed owner or instance.")
+        }
+        let token: AnyObject
+        if let source {
+            token = source
+        } else {
+            let direct = directBindingSources[owner.id] ?? NSObject()
+            directBindingSources[owner.id] = direct
+            token = direct
+        }
+        var sources = bindingSources[owner.id] ?? []
+        let inserted = sources.insert(ObjectIdentifier(token)).inserted
+        bindingSources[owner.id] = sources
+        let publish = (value as? ViewModel)?.refHandler.commitAddRef(owner, source: source)
+        if inserted, sources.count == 1 { notifyBind(id: owner.id) }
+        publish?()
+    }
+
+    /// Release only this source. During forced disposal the handle ledger is
+    /// already empty, but controllers must still finish detaching their refs.
+    func unbindOwner(_ owner: ViewModelBinding, source: AnyObject? = nil) {
+        guard !disposed else { return }
+        let token: AnyObject? = source ?? directBindingSources.removeValue(forKey: owner.id)
+        var sources = bindingSources[owner.id] ?? []
+        let removed = token.map { sources.remove(ObjectIdentifier($0)) != nil } ?? false
+        let last = removed && sources.isEmpty
+        if last {
+            bindingSources.removeValue(forKey: owner.id)
+        } else if removed {
+            bindingSources[owner.id] = sources
+        }
+        let publish = (value as? ViewModel)?.refHandler.commitRemoveRef(owner, source: source)
+        publish?()
+        publishPendingOwnerChange()
+        if last, !disposed { notifyUnbind(id: owner.id) }
+        // onUnbind may have acquired a replacement source.
+        if removed, bindingSources.isEmpty { recycle() }
+    }
+
     /// Remove a single reference. Auto-disposes when the list becomes empty, unless
     /// `aliveForever` is set.
     func unbind(_ id: String) {
@@ -101,14 +146,7 @@ final class InstanceHandle<Value: AnyObject> {
             return
         }
         bindingSources.removeValue(forKey: id)
-        if let lifecycle = value as? InstanceLifeCycle {
-            do {
-                try runCatching { lifecycle.onUnbind(arg, bindingId: id) }
-            } catch {
-                reportViewModelError(
-                    error, type: .lifecycle, context: "\(type(of: lifecycle)) onUnbind error")
-            }
-        }
+        notifyUnbind(id: id)
         // Ordinary unbind callbacks may acquire a new owner. Only begin
         // disposal if ownership is still empty when the callback returns.
         if bindingSources.isEmpty {
@@ -127,15 +165,9 @@ final class InstanceHandle<Value: AnyObject> {
         let ids = Array(bindingSources.keys)
         bindingSources.removeAll()
         directBindingSources.removeAll()
+        pendingOwnerChange = (value as? ViewModel)?.refHandler.commitClearRefs()
         for id in ids {
-            if let lifecycle = value as? InstanceLifeCycle {
-                do {
-                    try runCatching { lifecycle.onUnbind(arg, bindingId: id) }
-                } catch {
-                    reportViewModelError(
-                        error, type: .lifecycle, context: "\(type(of: lifecycle)) onUnbind error")
-                }
-            }
+            notifyUnbind(id: id)
         }
         finishDisposal()
     }
@@ -164,8 +196,19 @@ final class InstanceHandle<Value: AnyObject> {
     /// Keep the value alive until listeners have removed registry/owner paths,
     /// but reject recursive disposal and resolution throughout that fan-out.
     private func finishDisposal() {
-        runInViewModelUpdateTransaction(notifyListeners)
+        runInViewModelUpdateTransaction {
+            // Store eviction runs first. Propagated unbind callbacks can then
+            // resolve a replacement through the normal cache-miss path.
+            notifyListeners()
+            publishPendingOwnerChange()
+        }
         onDispose()
+    }
+
+    private func publishPendingOwnerChange() {
+        let publish = pendingOwnerChange
+        pendingOwnerChange = nil
+        publish?()
     }
 
     private func onDispose() {
@@ -196,6 +239,16 @@ final class InstanceHandle<Value: AnyObject> {
         } catch {
             reportViewModelError(
                 error, type: .lifecycle, context: "\(type(of: lifecycle)) onBind error")
+        }
+    }
+
+    private func notifyUnbind(id: String) {
+        guard let lifecycle = value as? InstanceLifeCycle else { return }
+        do {
+            try runCatching { lifecycle.onUnbind(arg, bindingId: id) }
+        } catch {
+            reportViewModelError(
+                error, type: .lifecycle, context: "\(type(of: lifecycle)) onUnbind error")
         }
     }
 

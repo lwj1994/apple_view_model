@@ -1,26 +1,33 @@
 import Foundation
 
-/// Tracks every registry handle touched by one binding and mirrors handle
-/// disposal back into the binding's source-aware hooks.
+/// Commits and releases one binding's ownership through a single attachment path.
 @MainActor
 final class AutoDisposeInstanceController {
+    private final class Registration {
+        let handle: any _AnyHandle
+        var cancelListener: (() -> Void)?
+
+        init(handle: any _AnyHandle) { self.handle = handle }
+    }
+
     private unowned let binding: ViewModelBinding
     private let onHandleDisposing: () -> Void
-    private let onInstanceAttached: ((any _AnyHandle, ViewModel) throws -> Void)?
-    private let onInstanceDetached: ((any _AnyHandle, ViewModel) -> Void)?
-
-    private var trackedHandles: [ObjectIdentifier: any _AnyHandle] = [:]
-    private var listenerDisposers: [ObjectIdentifier: () -> Void] = [:]
+    private let onInstanceAttaching: ((any _AnyHandle, ViewModel) throws -> Void)?
+    private let onInstanceAttached: ((any _AnyHandle, ViewModel) -> (() -> Void)?)?
+    private let onInstanceDetached: ((any _AnyHandle, ViewModel) -> (() -> Void)?)?
+    private var registrations: [ObjectIdentifier: Registration] = [:]
     private var disposed = false
 
     init(
         binding: ViewModelBinding,
         onHandleDisposing: @escaping () -> Void,
-        onInstanceAttached: ((any _AnyHandle, ViewModel) throws -> Void)? = nil,
-        onInstanceDetached: ((any _AnyHandle, ViewModel) -> Void)? = nil
+        onInstanceAttaching: ((any _AnyHandle, ViewModel) throws -> Void)? = nil,
+        onInstanceAttached: ((any _AnyHandle, ViewModel) -> (() -> Void)?)? = nil,
+        onInstanceDetached: ((any _AnyHandle, ViewModel) -> (() -> Void)?)? = nil
     ) {
         self.binding = binding
         self.onHandleDisposing = onHandleDisposing
+        self.onInstanceAttaching = onInstanceAttaching
         self.onInstanceAttached = onInstanceAttached
         self.onInstanceDetached = onInstanceDetached
     }
@@ -32,73 +39,52 @@ final class AutoDisposeInstanceController {
         try getHandle(type, factory: factory).requireInstance()
     }
 
-    /// Resolve and attach ownership once, exposing the handle for spec caching.
     func getHandle<Value: AnyObject>(
         _ type: Value.Type,
         factory: InstanceFactory<Value>
     ) throws -> InstanceHandle<Value> {
-        guard !disposed else {
-            throw ViewModelError("AutoDisposeInstanceController.getInstance() called after dispose.")
+        guard !disposed, !binding.isDisposed else {
+            throw ViewModelError("Cannot resolve an instance for a disposed binding.")
         }
         let factoryWithBinding = factory.copy(
             arg: factory.arg.copy(bindingId: .some(binding.id))
         )
-        let resolution = try InstanceManager.shared.resolveHandle(
+        return try InstanceManager.shared.getHandle(
             type,
-            factory: factoryWithBinding
+            factory: factoryWithBinding,
+            onResolve: { _ = try self.attachHandle($0) }
         )
-        let handle = resolution.handle
-        let viewModel = handle.value as? ViewModel
-        if let viewModel {
-            viewModel.refHandler.addRef(binding)
-        }
-        do {
-            try attachHandleListener(handle)
-        } catch {
-            rollbackCurrentAttachment(
-                handle,
-                viewModel: viewModel,
-                forceNewGeneration: resolution.wasCreated
-            )
-            throw error
-        }
-        return handle
     }
 
     func getInstancesByTag<Value: AnyObject>(
         _ type: Value.Type,
         tag: AnyHashable
     ) throws -> [Value] {
-        guard !disposed else {
-            throw ViewModelError(
-                "AutoDisposeInstanceController.getInstancesByTag() called after dispose."
-            )
+        guard !disposed, !binding.isDisposed else {
+            throw ViewModelError("Cannot resolve instances for a disposed binding.")
         }
         let handles = try InstanceManager.shared.getHandles(byTag: tag, type: type)
-        var result: [Value] = []
-        for handle in handles {
-            handle.bind(binding.id)
-            let viewModel = handle.value as? ViewModel
-            if let viewModel {
-                viewModel.refHandler.addRef(binding)
+        // Reject invalid dependency edges before acquiring any batch member.
+        for handle in handles { try validateAttachment(handle) }
+        var added: [Registration] = []
+        do {
+            var result: [Value] = []
+            for handle in handles {
+                if let registration = try attachHandle(handle) {
+                    added.append(registration)
+                }
+                result.append(try handle.requireInstance())
             }
-            do {
-                try attachHandleListener(handle)
-            } catch {
-                rollbackCurrentAttachment(
-                    handle,
-                    viewModel: viewModel,
-                    forceNewGeneration: false
-                )
-                throw error
-            }
-            if let value = handle.value { result.append(value) }
+            return result
+        } catch {
+            for registration in added.reversed() { detach(registration) }
+            throw error
         }
-        return result
     }
 
     func performForAllInstances(_ action: (ViewModel) -> Void) {
-        for handle in trackedHandles.values {
+        for registration in Array(registrations.values) {
+            let handle = registration.handle
             guard !handle.isDisposedAny, let vm = handle.anyValue as? ViewModel else { continue }
             action(vm)
         }
@@ -106,104 +92,90 @@ final class AutoDisposeInstanceController {
 
     func unbind<Value: AnyObject>(_ value: Value) {
         guard !disposed else { return }
-        guard let (key, handle) = trackedHandles.first(where: { $0.value.anyValue === value }) else {
+        guard let registration = registrations.values.first(where: { $0.handle.anyValue === value }) else {
             return
         }
-        // Forget the old attachment before any owner/lifecycle callback can
-        // synchronously resolve it again. The binding hook also clears its
-        // old cache and subscriptions before dependency owner callbacks run.
-        listenerDisposers.removeValue(forKey: key)?()
-        trackedHandles.removeValue(forKey: key)
-        if let viewModel = handle.anyValue as? ViewModel {
-            onInstanceDetached?(handle, viewModel)
-            if trackedHandles[key] == nil, !viewModel.isDisposed {
-                viewModel.refHandler.removeRef(binding)
-            }
-        }
-        // A reentrant read has committed a new attachment and reused this
-        // direct source. Do not let the earlier unbind tear that source down.
-        if trackedHandles[key] == nil, !handle.isDisposedAny {
-            handle.unbindAny(bindingId: binding.id)
-        }
+        detach(registration)
     }
 
     func dispose() {
         guard !disposed else { return }
         disposed = true
-        for (key, handle) in Array(trackedHandles) {
-            detachViewModelRef(handle: handle)
-            listenerDisposers.removeValue(forKey: key)?()
-            if !handle.isDisposedAny {
-                handle.unbindAny(bindingId: binding.id)
-            }
-        }
-        trackedHandles.removeAll()
-        listenerDisposers.removeAll()
+        for registration in Array(registrations.values) { detach(registration) }
     }
 
-    private func attachHandleListener<Value: AnyObject>(
+    private func requireLive(_ handle: any _AnyHandle) throws {
+        guard !disposed, !binding.isDisposed else {
+            throw ViewModelError("Cannot attach: binding was disposed during resolution.")
+        }
+        guard !handle.isDisposedAny else {
+            throw ViewModelError("Cannot attach: instance was disposed during resolution.")
+        }
+    }
+
+    private func validateAttachment(_ handle: any _AnyHandle) throws {
+        try requireLive(handle)
+        if registrations[ObjectIdentifier(handle)] == nil,
+           let vm = handle.anyValue as? ViewModel {
+            try onInstanceAttaching?(handle, vm)
+        }
+    }
+
+    /// Returns only a newly installed registration, for batch rollback.
+    private func attachHandle<Value: AnyObject>(
         _ handle: InstanceHandle<Value>
-    ) throws {
-        guard !disposed else {
-            throw ViewModelError(
-                "Cannot attach \(Value.self): binding was disposed during resolution."
-            )
-        }
-        guard !handle.isDisposed else {
-            throw ViewModelError(
-                "Cannot attach \(Value.self): instance was disposed during resolution."
-            )
-        }
+    ) throws -> Registration? {
+        try validateAttachment(handle)
         let key = ObjectIdentifier(handle)
-        guard listenerDisposers[key] == nil else { return }
-
-        if let vm = handle.value as? ViewModel {
-            try onInstanceAttached?(handle, vm)
+        if registrations[key] != nil {
+            // Internal callers can remove one ledger's direct source. A normal
+            // read repairs it without duplicating the existing registration.
+            try handle.bindOwner(binding)
+            try requireLive(handle)
+            guard handle.containsDirectBinding(binding.id) else {
+                throw ViewModelError("Ownership was released while binding an instance.")
+            }
+            return nil
         }
-        guard !disposed else {
-            throw ViewModelError(
-                "Cannot attach \(Value.self): binding was disposed during resolution."
-            )
+        let publish = (handle.value as? ViewModel).flatMap { onInstanceAttached?(handle, $0) }
+        let registration = Registration(handle: handle)
+        registrations[key] = registration
+        registration.cancelListener = handle.addListener { [weak self, weak registration] _ in
+            guard let self, let registration else { return }
+            self.detach(registration)
+            if !InstanceManager.shared.isResetting, !self.disposed { self.onHandleDisposing() }
         }
-        guard !handle.isDisposed else {
-            throw ViewModelError(
-                "Cannot attach \(Value.self): instance was disposed during resolution."
-            )
-        }
-        trackedHandles[key] = handle
-        listenerDisposers[key] = handle.addListener { [weak self] current in
-            guard let self else { return }
-            self.detachViewModelRef(handle: current)
-            self.listenerDisposers.removeValue(forKey: key)?()
-            self.trackedHandles.removeValue(forKey: key)
-            if !InstanceManager.shared.isResetting { self.onHandleDisposing() }
-        }
-    }
-
-    /// Undo only the direct ownership path introduced by the current resolve.
-    /// This covers dependency-cycle rejection and lifecycle reentrancy where a
-    /// ViewModel disposes its resolving binding from `onCreate` / `onBind`
-    /// before the controller has committed the handle to `trackedHandles`.
-    private func rollbackCurrentAttachment<Value: AnyObject>(
-        _ handle: InstanceHandle<Value>,
-        viewModel: ViewModel?,
-        forceNewGeneration: Bool
-    ) {
-        if let viewModel, !viewModel.isDisposed {
-            viewModel.refHandler.removeRef(binding)
-        }
-        if !handle.isDisposed {
-            handle.unbind(binding.id)
-        }
-        if forceNewGeneration, !handle.isDisposed {
-            handle.unbindAll(force: true)
+        do {
+            // Graph adjacency and disposal tracking must exist before onBind.
+            try handle.bindOwner(binding)
+            if registrations[key] === registration { publish?() }
+            try requireLive(handle)
+            guard handle.containsDirectBinding(binding.id) else {
+                throw ViewModelError("Ownership was released while binding an instance.")
+            }
+            return registrations[key] === registration ? registration : nil
+        } catch {
+            detach(registration)
+            throw error
         }
     }
 
-    private func detachViewModelRef(handle: any _AnyHandle) {
-        guard let vm = handle.anyValue as? ViewModel else { return }
-        if !vm.isDisposed { vm.refHandler.removeRef(binding) }
-        onInstanceDetached?(handle, vm)
+    private func detach(_ registration: Registration) {
+        let handle = registration.handle
+        let key = ObjectIdentifier(handle)
+        // Old cleanup must never remove a replacement installed by reentry.
+        guard registrations[key] === registration else { return }
+        registrations.removeValue(forKey: key)
+        registration.cancelListener?()
+        registration.cancelListener = nil
+        let publish = (handle.anyValue as? ViewModel).flatMap { onInstanceDetached?(handle, $0) }
+        publish?()
+        // Preserve Apple's propagated-root-before-dependency unbind order.
+        // A callback may already have reused the direct source in a new
+        // registration; only the old edge's distinct sources were ours to remove.
+        if registrations[key] == nil {
+            handle.unbindOwnerAny(binding, source: nil)
+        }
     }
 }
 
@@ -212,19 +184,17 @@ final class AutoDisposeInstanceController {
 protocol _AnyHandle: AnyObject {
     var anyValue: AnyObject? { get }
     var isDisposedAny: Bool { get }
-    func bindAnyFrom(bindingId: String, source: AnyObject)
-    func unbindAny(bindingId: String)
-    func unbindAnyFrom(bindingId: String, source: AnyObject)
+    func bindOwnerAny(_ owner: ViewModelBinding, source: AnyObject) throws
+    func unbindOwnerAny(_ owner: ViewModelBinding, source: AnyObject?)
 }
 
 extension InstanceHandle: _AnyHandle {
     var anyValue: AnyObject? { value }
     var isDisposedAny: Bool { isDisposed }
-    func bindAnyFrom(bindingId: String, source: AnyObject) {
-        bindFrom(bindingId, source: source)
+    func bindOwnerAny(_ owner: ViewModelBinding, source: AnyObject) throws {
+        try bindOwner(owner, source: source)
     }
-    func unbindAny(bindingId: String) { unbind(bindingId) }
-    func unbindAnyFrom(bindingId: String, source: AnyObject) {
-        unbindFrom(bindingId, source: source)
+    func unbindOwnerAny(_ owner: ViewModelBinding, source: AnyObject?) {
+        unbindOwner(owner, source: source)
     }
 }
