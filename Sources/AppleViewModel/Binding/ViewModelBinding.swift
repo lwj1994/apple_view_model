@@ -410,12 +410,12 @@ open class ViewModelBinding {
         }
 
         if let key = arg.key {
-            do {
+            // 只有 key 不可解析才允许回退；所有权连接失败必须保留原始错误。
+            if factory == nil, arg.tag == nil {
                 return try requireExistingViewModel(arg: InstanceArg(key: key), listen: listen)
-            } catch let error as ViewModelError {
-                if factory == nil, arg.tag == nil {
-                    throw error
-                }
+            }
+            if try InstanceManager.shared.containsLiveKey(VM.self, key: key) {
+                return try requireExistingViewModel(arg: InstanceArg(key: key), listen: listen)
             }
         }
 
@@ -434,9 +434,6 @@ open class ViewModelBinding {
         arg: InstanceArg,
         listen: Bool
     ) throws -> VM {
-        guard !isDisposed else {
-            throw ViewModelError("Cannot get \(VM.self): binding is disposed.")
-        }
         let vm: VM = try instanceController.getInstance(
             VM.self,
             factory: InstanceFactory<VM>(arg: arg)

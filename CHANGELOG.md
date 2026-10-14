@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-14
+
 ### Changed
 
 - Centralize managed ownership changes in the handle. Both handle sources and
@@ -19,6 +21,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- 子依赖回调重绑 parent 时取消过期 `onUnbind`；重绑后再次解绑只派发本次释放的通知。
+  回调提前 recycle、reset 或释放最后一个 owner 时，在销毁前补齐最终 `onUnbind`。
+- Fall back from a key to a tag only when the key is unavailable. Propagate ownership
+  attachment errors instead of silently resolving a different tagged instance.
+- Retain and dispose the lifecycle observer cancellation callback in the test
+  suite for compatibility with Swift compilers that reject unused functions.
 - Reject cyclic dependencies before ownership callbacks and prevent older owner
   snapshots from being delivered after a reentrant ownership change.
 - Give each dependency attachment and controller registration its own identity,

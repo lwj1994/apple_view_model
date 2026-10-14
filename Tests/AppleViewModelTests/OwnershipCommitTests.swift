@@ -145,6 +145,132 @@ final class OwnershipCommitTests: XCTestCase {
         ])
     }
 
+    func test_childOnUnbindReentrySuppressesObsoleteParentOnUnbind() throws {
+        let owner = OwnershipBinding()
+        defer { owner.dispose() }
+        var rebind = true
+        var active = false
+        let parentSpec = spec("parent", bound: { _, id in
+            if id == owner.id { active = true }
+        }, unbound: { _, id in
+            if id == owner.id { active = false }
+        })
+        let childSpec = spec("child", unbound: { _, id in
+            if id == owner.id, rebind {
+                rebind = false
+                _ = try owner.watchThrowing(parentSpec)
+            }
+        })
+        var parent: OwnershipNode { owner.read(parentSpec) }
+        _ = try owner.watchThrowing(parentSpec).viewModelBinding.watchThrowing(childSpec)
+        let generation = ObjectIdentifier(parent)
+        events.values.removeAll()
+
+        owner.unbind(parent)
+
+        XCTAssertEqual(events.values, [
+            "unbind:child:\(owner.id)", "bind:parent:\(owner.id)", "bind:child:\(owner.id)"
+        ])
+        XCTAssertTrue(active)
+        XCTAssertEqual(Set(try handle("parent").bindingIds), Set([owner.id]))
+        XCTAssertEqual(parent.refHandler.owners.map(\.id), [owner.id])
+        XCTAssertEqual(ObjectIdentifier(parent), generation)
+        try parent.viewModelBinding.readThrowing(childSpec).notifyListeners()
+        XCTAssertEqual(owner.updates, 1)
+        owner.dispose()
+        XCTAssertFalse(active)
+        XCTAssertEqual(events.values.filter { $0 == "unbind:parent:\(owner.id)" }.count, 1)
+        XCTAssertEqual(events.values.filter { $0.hasPrefix("dispose:") }.count, 2)
+    }
+
+    func test_childOnUnbindRebindThenReleaseDoesNotDuplicateParentOnUnbind() throws {
+        let owner = OwnershipBinding()
+        let keeper = OwnershipBinding()
+        defer { owner.dispose(); keeper.dispose() }
+        let parentSpec = spec("parent")
+        var rebind = true
+        let childSpec = spec("child", unbound: { _, id in
+            if id == owner.id, rebind {
+                rebind = false
+                let parent = try owner.watchThrowing(parentSpec)
+                owner.unbind(parent)
+            }
+        })
+        let parent = try owner.watchThrowing(parentSpec)
+        _ = try keeper.readThrowing(parentSpec)
+        _ = try parent.viewModelBinding.watchThrowing(childSpec)
+        events.values.removeAll()
+
+        owner.unbind(parent)
+
+        XCTAssertEqual(events.values.filter { $0 == "unbind:parent:\(owner.id)" }.count, 1)
+        XCTAssertEqual(parent.refHandler.owners.map(\.id), [keeper.id])
+        XCTAssertFalse(parent.isDisposed)
+    }
+
+    func test_childOnUnbindRecyclePreservesParentFinalUnbind() throws {
+        for disposal in ["recycle", "reset", "lastOwner"] {
+            let owner = OwnershipBinding()
+            let keeper = OwnershipBinding()
+            defer { owner.dispose(); keeper.dispose() }
+            let parentSpec = spec("parent")
+            let parent = try owner.readThrowing(parentSpec)
+            if disposal == "lastOwner" { _ = try keeper.readThrowing(parentSpec) }
+            let childSpec = spec("child", unbound: { _, id in
+                if id == owner.id {
+                    switch disposal {
+                    case "reset": ViewModel.reset()
+                    case "lastOwner": keeper.unbind(parent)
+                    default: owner.recycle(parent)
+                    }
+                }
+            })
+            _ = try parent.viewModelBinding.readThrowing(childSpec)
+            events.values.removeAll()
+
+            owner.unbind(parent)
+
+            XCTAssertEqual(events.values.filter { $0 == "unbind:parent:\(owner.id)" }.count, 1)
+            XCTAssertTrue(parent.isDisposed)
+            XCTAssertEqual(events.values.filter { $0 == "dispose:parent" }.count, 1)
+            let unbindIndex = try XCTUnwrap(events.values.firstIndex(of: "unbind:parent:\(owner.id)"))
+            let disposeIndex = try XCTUnwrap(events.values.firstIndex(of: "dispose:parent"))
+            XCTAssertLessThan(unbindIndex, disposeIndex)
+        }
+    }
+
+    func test_pendingUnbindCanReacquireParentBeforeAutomaticDisposal() throws {
+        let owner = OwnershipBinding()
+        let keeper = OwnershipBinding()
+        defer { owner.dispose(); keeper.dispose() }
+        var parentSpec: ViewModelSpec<OwnershipNode>!
+        var rebind = true
+        parentSpec = spec("parent", unbound: { _, id in
+            if id == owner.id, rebind {
+                rebind = false
+                _ = try owner.watchThrowing(parentSpec)
+            }
+        })
+        let parent = try owner.readThrowing(parentSpec)
+        _ = try keeper.readThrowing(parentSpec)
+        let childSpec = spec("child", unbound: { _, id in
+            if id == owner.id { keeper.unbind(parent) }
+        })
+        _ = try parent.viewModelBinding.watchThrowing(childSpec)
+        events.values.removeAll()
+
+        owner.unbind(parent)
+
+        XCTAssertFalse(parent.isDisposed)
+        XCTAssertEqual(parent.refHandler.owners.map(\.id), [owner.id])
+        XCTAssertEqual(Set(try handle("parent").bindingIds), Set([owner.id]))
+        XCTAssertEqual(events.values.filter { $0 == "unbind:parent:\(owner.id)" }.count, 1)
+        XCTAssertFalse(events.values.contains("dispose:parent"))
+        guard !parent.isDisposed else { return }
+        try parent.viewModelBinding.readThrowing(childSpec).notifyListeners()
+        XCTAssertEqual(owner.updates, 1)
+    }
+
     func test_onBindCanReadAndWatchSameGeneration() throws {
         let owner = OwnershipBinding()
         defer { owner.dispose() }
@@ -338,6 +464,22 @@ final class OwnershipCommitTests: XCTestCase {
         XCTAssertTrue(rejected)
         XCTAssertEqual(parent.refHandler.owners.map(\.id), [owner.id])
         XCTAssertEqual(child.refHandler.externalOwners.map(\.id), [owner.id])
+    }
+
+    func test_keyAttachmentRejectionDoesNotFallBackToDifferentTaggedNode() throws {
+        let owner = OwnershipBinding()
+        defer { owner.dispose() }
+        let aSpec = spec("a", tag: "batch")
+        let bSpec = spec("b", tag: "batch")
+        var parent: OwnershipNode { owner.read(aSpec) }
+        _ = parent
+        _ = try owner.readThrowing(bSpec)
+        events.values.removeAll()
+        XCTAssertThrowsError(
+            try parent.viewModelBinding.readCached(key: "a", tag: "batch") as OwnershipNode
+        )
+        XCTAssertTrue(events.values.isEmpty)
+        XCTAssertEqual(Set(try handle("b").bindingIds), Set([owner.id]))
     }
 
     func test_rejectedTagBatchPreservesExistingEdgesAndSubscriptions() throws {

@@ -146,6 +146,12 @@ public final class InstanceManager {
         return try store(for: type).getHandle(factory: factory!, onResolve: onResolve)
     }
 
+    /// 只检查可解析的 identity，不附加 owner 或触发生命周期。
+    func containsLiveKey<Value: AnyObject>(_ type: Value.Type, key: AnyHashable) throws -> Bool {
+        try requireNotResetting()
+        return store(for: type).containsLiveKey(key)
+    }
+
     /// All handles that currently carry `tag` for the requested type.
     func getHandles<Value: AnyObject>(
         byTag tag: AnyHashable,

@@ -249,7 +249,8 @@ final class RegistryCoverageTests: XCTestCase {
         viewModelLog(message())
         XCTAssertEqual(evaluations, 1)
         let observer = DefaultLifecycleObserver()
-        ViewModel.addLifecycle(observer)
+        let removeObserver = ViewModel.addLifecycle(observer)
+        defer { removeObserver() }
         let owner = ViewModelBinding()
         defer { owner.dispose() }
         _ = owner.read(ViewModelSpec { CounterViewModel() })
@@ -284,7 +285,7 @@ final class RegistryCoverageTests: XCTestCase {
             attached: { _, _ in nil }, detached: { _, _ in nil }, updated: { _ in }
         )
         XCTAssertThrowsError(try consumer.readCached(key: "key", tag: "tag") as CounterViewModel) {
-            XCTAssertTrue(String(describing: $0).contains("binding is disposed"))
+            XCTAssertTrue(String(describing: $0).contains("Disposed during key lookup"))
         }
     }
 

@@ -23,6 +23,8 @@ final class Store<Value: AnyObject> {
 
     var isEmpty: Bool { handles.isEmpty }
 
+    func containsLiveKey(_ key: AnyHashable) -> Bool { handles[key]?.isDisposed == false }
+
     /// Every resolvable handle carrying the tag, sorted most-recent-first.
     func instances(byTag tag: AnyHashable) -> [InstanceHandle<Value>] {
         guard !disposed else {

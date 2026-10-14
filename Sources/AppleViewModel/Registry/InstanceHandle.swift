@@ -35,6 +35,7 @@ final class InstanceHandle<Value: AnyObject> {
     private var disposing = false
     private var disposed = false
     private var pendingOwnerChange: (() -> Void)?
+    private var pendingUnbinds: [String: NSObject] = [:]
 
     init(
         value: Value,
@@ -83,6 +84,7 @@ final class InstanceHandle<Value: AnyObject> {
         var sources = bindingSources[id] ?? []
         guard sources.insert(ObjectIdentifier(source)).inserted else { return }
         bindingSources[id] = sources
+        pendingUnbinds.removeValue(forKey: id)
         if sources.count == 1 { notifyBind(id: id) }
     }
 
@@ -103,6 +105,7 @@ final class InstanceHandle<Value: AnyObject> {
         var sources = bindingSources[owner.id] ?? []
         let inserted = sources.insert(ObjectIdentifier(token)).inserted
         bindingSources[owner.id] = sources
+        pendingUnbinds.removeValue(forKey: owner.id)
         let publish = (value as? ViewModel)?.refHandler.commitAddRef(owner, source: source)
         if inserted, sources.count == 1 { notifyBind(id: owner.id) }
         publish?()
@@ -121,10 +124,16 @@ final class InstanceHandle<Value: AnyObject> {
         } else if removed {
             bindingSources[owner.id] = sources
         }
+        let pendingUnbind = last ? NSObject() : nil
+        if let pendingUnbind { pendingUnbinds[owner.id] = pendingUnbind }
         let publish = (value as? ViewModel)?.refHandler.commitRemoveRef(owner, source: source)
         publish?()
         publishPendingOwnerChange()
-        if last, !disposed { notifyUnbind(id: owner.id) }
+        // 传播回调可能重绑后再次解绑；只允许本次仍有效的释放派发 onUnbind。
+        if let pendingUnbind, pendingUnbinds[owner.id] === pendingUnbind {
+            pendingUnbinds.removeValue(forKey: owner.id)
+            notifyUnbind(id: owner.id)
+        }
         // onUnbind may have acquired a replacement source.
         if removed, bindingSources.isEmpty { recycle() }
     }
@@ -189,6 +198,9 @@ final class InstanceHandle<Value: AnyObject> {
     private func recycle(force: Bool = false) {
         guard !isDisposed else { return }
         if arg.aliveForever, !force { return }
+        // 普通解绑允许在 onUnbind 中重新获取 owner，先发布再决定是否销毁。
+        publishPendingUnbinds()
+        guard !isDisposed, bindingSources.isEmpty else { return }
         disposing = true
         finishDisposal()
     }
@@ -196,6 +208,8 @@ final class InstanceHandle<Value: AnyObject> {
     /// Keep the value alive until listeners have removed registry/owner paths,
     /// but reject recursive disposal and resolution throughout that fan-out.
     private func finishDisposal() {
+        // 传播回调可能提前 recycle/reset，必须在销毁前补齐已提交的最终解绑。
+        publishPendingUnbinds()
         runInViewModelUpdateTransaction {
             // Store eviction runs first. Propagated unbind callbacks can then
             // resolve a replacement through the normal cache-miss path.
@@ -203,6 +217,15 @@ final class InstanceHandle<Value: AnyObject> {
             publishPendingOwnerChange()
         }
         onDispose()
+    }
+
+    private func publishPendingUnbinds() {
+        for (id, token) in pendingUnbinds {
+            // 上一项回调可能重绑或强制销毁；旧快照不得重复派发。
+            guard pendingUnbinds[id] === token else { continue }
+            pendingUnbinds.removeValue(forKey: id)
+            notifyUnbind(id: id)
+        }
     }
 
     private func publishPendingOwnerChange() {
