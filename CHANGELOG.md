@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-15
+
+### Added
+
+- Optional `AppleViewModelLint` plugin, sharing the dependency scanner and
+  adding warnings for cached resolved ViewModels, literal unkeyed
+  `aliveForever`, construction outside recognized builders/factories, and
+  parameterized specs without keys. Supports per-rule disabling through
+  `.apple-view-model-lint.json`; the cycle-only plugin retains its behavior.
+- Optional `AppleViewModelDependencyCheck` build tool plugin for SwiftPM and
+  Xcode targets. Warns about potential ViewModel type dependency cycles with
+  deterministic cycle paths and file/line/column locations for each edge.
+  Uses SwiftSyntax in a separate host tool, leaves runtime cycle detection
+  unchanged, and does not fail builds for detected cycles.
+- Serial scanner regression tests and downstream plugin integration checks for
+  opt-in behavior, source changes, configuration changes, and warning locations.
+- Support SwiftSyntax 600.0.1 through 604.x for the host scanner, allowing
+  consumers to share a compatible version with other tooling dependencies.
+
+### Changed
+
+- Recommend `AppleViewModelLint` for app and business targets in the README and
+  bundled skill, with SwiftPM/Xcode setup, rule guidance, configuration examples,
+  and analysis limits. Runtime cycle detection and lifecycle APIs are unchanged.
+
 ## [0.11.1] - 2026-10-14
 
 ### Changed

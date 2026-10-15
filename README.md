@@ -222,7 +222,7 @@ from that ViewModel; otherwise create it through `taskScope`.
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.11.1")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.12.0")
 ```
 
 Add `"AppleViewModel"` to your target dependencies.
@@ -404,6 +404,116 @@ Modules A, B, C develop independently, each exporting their own specs. Getter de
 A keyed parent can be shared by several roots. When roots join or leave, its already-resolved children keep the same identity and receive source-aware owner updates. A root may own the same keyed child both directly and through one or more parents; releasing one path cannot remove the others. Synchronous notification propagation is transaction-based, so a diamond graph refreshes each root binding at most once. Dependency notifications continue through every path: a parent business listener can receive both intermediate and final derived values as separate notifications.
 
 Unkeyed identity is the resolved ViewModel type plus the current binding's private default key: repeated resolution of the same type reuses one instance within that binding, while different bindings remain isolated. Add an explicit key for cross-binding sharing or multiple instances of the same type in one binding. Every `aliveForever` spec must have an explicit key, whether resolved by a root binding or another ViewModel; a missing or computed-nil key fails fast before the builder runs, and the Store enforces the same invariant for internal factories.
+
+### Optional build-time dependency warnings
+
+**Recommended:** enable [`AppleViewModelLint`](#recommended-usage-lint) on app
+and business targets for all five checks. Use the cycle-only plugin below when
+only dependency diagnostics are needed. Both plugins are opt-in.
+
+The package includes `AppleViewModelDependencyCheck`, an opt-in build tool
+plugin. Enable it on each business target to scan that target's Swift source
+files during builds:
+
+```swift
+.target(
+    name: "MyFeature",
+    dependencies: [
+        .product(name: "AppleViewModel", package: "apple_view_model")
+    ],
+    plugins: [
+        .plugin(name: "AppleViewModelDependencyCheck", package: "apple_view_model")
+    ]
+)
+```
+
+For an Xcode project, add the package, then add
+`AppleViewModelDependencyCheck` under the app target's **Build Phases → Run
+Build Tool Plug-ins**. The plugin supports both SwiftPM and Xcode targets.
+Importing `AppleViewModel` alone does not enable scanning. SwiftSyntax is a
+build-tool dependency only; it is not linked into the runtime library or app.
+Package resolution can still download it even when the plugin is not enabled.
+The scanner accepts SwiftSyntax 600.0.1 through 604.x so consumers can share a
+compatible version with their other tooling dependencies.
+
+For a potential cycle, the build succeeds and reports a warning with a cycle
+path, followed by a source location for every dependency edge:
+
+```text
+/Project/A.swift:12:16: warning: AppleViewModel: potential dependency cycle: A -> B -> C -> A
+/Project/A.swift:12:16: note: A -> B resolved here
+/Project/B.swift:8:16: note: B -> C resolved here
+/Project/C.swift:19:16: note: C -> A resolved here
+```
+
+The scanner recognizes instance calls to `viewModelBinding.read(spec)` and
+`watch(spec)`, their throwing variants, and `self.viewModelBinding`. It resolves
+explicitly typed specs, simple single-constructor builders, inline specs,
+parameterized specs, and qualified specs such as `Specs.session` or `Self.spec`.
+It joins declarations across files, including extensions and nested types, and
+recognizes locally declared subclasses of `ViewModel` and `StateViewModel`.
+Unresolved or ambiguous references are skipped. Repeated edges are deduplicated;
+complex graphs report deterministic cycle witnesses rather than every possible
+combination of paths.
+
+These are **potential type cycles**, not proof of an instance ownership cycle.
+The scan does not evaluate keys, conditions (including `#if`), builder execution,
+or spec overrides. It does not follow arbitrary helper calls, binding/spec
+aliases, type aliases, generated code, or declarations in other targets/modules;
+inherited dependency bodies are not expanded for each subclass. An absence of
+warnings is not proof of acyclicity. Runtime construction and ownership-cycle
+checks remain enabled and unchanged. Invalid scanner invocation or unreadable
+input fails the build instead of silently skipping the check.
+
+### Recommended usage lint
+
+We recommend `AppleViewModelLint` to enable the cycle check **and** these four usage
+rules. Both plugins share the same scanner. The existing
+`AppleViewModelDependencyCheck` continues to check cycles only; enable one of
+the two plugins on a target to avoid duplicate cycle diagnostics.
+
+```swift
+plugins: [
+    .plugin(name: "AppleViewModelLint", package: "apple_view_model")
+]
+```
+
+In Xcode, select `AppleViewModelLint` in **Build Phases → Run Build Tool
+Plug-ins**. All findings are warnings with file, line, and column positions.
+Usage warnings also include a rule ID; cycle warnings include the dependency
+path. They do not change runtime behavior or fail the build.
+
+| Rule ID | Warning |
+| --- | --- |
+| `cached-view-model` | A direct `read/watch(spec)` result (including throwing variants) is saved in a stored/lazy property, a global variable, or an identified property assignment. Prefer a computed resolver property so recycle can be observed. |
+| `alive-forever-key` | A spec explicitly sets `aliveForever` to `true` but omits `key` or provides literal `nil`. Single-expression constant closures are also recognized for argument specs. |
+| `unmanaged-construction` | A locally identified ViewModel type is constructed outside an inline spec builder or a recognized `ViewModelFactory.build/buildThrowing` method. Keep construction inside factories and resolve through bindings. |
+| `parameterized-spec-key` | An argument spec (`ViewModelSpecWithArg`, `WithArg2...4`) has no explicit non-nil key. Different arguments can reuse one instance in the same binding; add an argument-derived key only when separate instances are intended. |
+| `dependency-cycle` | The existing potential type dependency cycle check. |
+
+To turn off individual rules, create `.apple-view-model-lint.json` beside the
+consumer's `Package.swift`, or in the Xcode project directory:
+
+```json
+{
+  "disabledRules": ["parameterized-spec-key"]
+}
+```
+
+Omit the file or use an empty list to enable all rules. The configuration applies
+to targets using `AppleViewModelLint` in that package/project; the cycle-only
+plugin ignores it. Configuration changes invalidate the scan. Invalid JSON or
+unknown rule IDs fail the scan so misspellings cannot silently disable checks.
+
+Usage lint is also syntax-based. It recognizes `viewModelBinding` and directly
+declared `ViewModelBinding` / `HostedViewModelBinding` receivers, direct named
+constructors, and contextual `.init` in annotated variable declarations. It
+does not trace values through local aliases, helpers, arbitrary expressions,
+or external modules. Computed properties and local temporaries are not flagged
+as cached fields. Named helper functions passed as builders are not followed;
+their constructor calls can still warn. Dynamic key/aliveForever expressions
+are not evaluated, and intentional unkeyed argument sharing remains valid.
+Runtime validation and lifecycle management remain the final authority.
 
 ## Binding access APIs
 

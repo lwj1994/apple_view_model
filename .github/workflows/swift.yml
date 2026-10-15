@@ -23,6 +23,8 @@ jobs:
       run: swift build -v
     - name: Run tests with coverage
       run: bash scripts/test-coverage.sh
+    - name: Verify optional dependency plugin in a downstream package
+      run: python3 scripts/test-dependency-plugin.py
     - name: Build iOS Simulator
       run: >-
         xcodebuild -scheme AppleViewModel

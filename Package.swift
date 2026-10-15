@@ -19,7 +19,19 @@ let package = Package(
         .library(
             name: "AppleViewModel",
             targets: ["AppleViewModel"]
+        ),
+        .plugin(
+            name: "AppleViewModelDependencyCheck",
+            targets: ["AppleViewModelDependencyCheck"]
+        ),
+        .plugin(
+            name: "AppleViewModelLint",
+            targets: ["AppleViewModelLint"]
         )
+    ],
+    dependencies: [
+        // Used only by the optional source scanner, never by the runtime library.
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", "600.0.1"..<"605.0.0")
     ],
     targets: [
         .target(
@@ -28,6 +40,33 @@ let package = Package(
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
+        ),
+        .target(
+            name: "DependencyScannerCore",
+            dependencies: [
+                .product(name: "SwiftParser", package: "swift-syntax"),
+                .product(name: "SwiftSyntax", package: "swift-syntax")
+            ],
+            path: "Tools/DependencyScannerCore"
+        ),
+        .executableTarget(
+            name: "AppleViewModelDependencyScanner",
+            dependencies: ["DependencyScannerCore"],
+            path: "Tools/AppleViewModelDependencyScanner"
+        ),
+        .plugin(
+            name: "AppleViewModelDependencyCheck",
+            capability: .buildTool(),
+            dependencies: ["AppleViewModelDependencyScanner"]
+        ),
+        .plugin(
+            name: "AppleViewModelLint",
+            capability: .buildTool(),
+            dependencies: ["AppleViewModelDependencyScanner"]
+        ),
+        .testTarget(
+            name: "DependencyScannerTests",
+            dependencies: ["DependencyScannerCore"]
         ),
         .testTarget(
             name: "AppleViewModelTests",

@@ -1,6 +1,6 @@
 ---
 name: apple-view-model
-description: Use AppleViewModel in Swift 6 projects for state management, functional-module composition, dependency injection, automatic ViewModel and Task lifecycles, SwiftUI/UIKit bindings, ViewModel-to-ViewModel dependencies, sharing, pause/resume, and tests.
+description: Use AppleViewModel in Swift 6 projects for state management, functional-module composition, dependency injection, automatic ViewModel and Task lifecycles, SwiftUI/UIKit bindings, ViewModel-to-ViewModel dependencies, sharing, pause/resume, build-time lint plugins, and tests.
 ---
 
 # AppleViewModel Skill
@@ -33,7 +33,7 @@ Use this skill when:
   `ViewModelSpec`, `ViewModelBinding`, `@WatchViewModel`, or `@ReadViewModel`.
 - The task concerns state, DI, module composition, lifecycle, sharing,
   ViewModel-owned Tasks, concurrency, pause/resume, SwiftUI/UIKit integration,
-  or AppleViewModel tests.
+  build-time dependency/usage checks, or AppleViewModel tests.
 
 ## Resolution decision order (must follow)
 
@@ -504,6 +504,66 @@ struct PageB: View {
 
 See `examples/sharing_example.swift` for the complete example.
 
+## Recommended build-time checks
+
+Recommend enabling `AppleViewModelLint` on each app or business target when
+adding or updating AppleViewModel (available since 0.12.0). It combines cycle
+checks and four usage checks. The plugin remains opt-in: importing the library
+does not enable it. Respect projects that deliberately leave it disabled.
+
+For a SwiftPM consumer, attach the plugin to each target containing ViewModels:
+
+```swift
+.target(
+    name: "MyFeature",
+    dependencies: [
+        .product(name: "AppleViewModel", package: "apple_view_model")
+    ],
+    plugins: [
+        .plugin(name: "AppleViewModelLint", package: "apple_view_model")
+    ]
+)
+```
+
+For an Xcode project, add the package and select `AppleViewModelLint` under the
+app target's **Build Phases → Run Build Tool Plug-ins**. Build normally to run
+checks. Findings are warnings with file/line/column positions; cycle diagnostics
+also include the full cycle path and a source note for each dependency edge.
+Warnings do not fail builds. Invalid configuration or unreadable inputs do.
+
+| Rule | Respond to a warning |
+| --- | --- |
+| `dependency-cycle` | Inspect the reported `A -> B -> A` path and each `viewModelBinding.read/watch(spec)` call, including throwing variants; remove unintended mutual ownership. |
+| `cached-view-model` | Replace stored/lazy resolved instances with computed resolver properties so later access resolves a new generation after recycle. Local temporaries are allowed. |
+| `alive-forever-key` | Give a spec with literal `aliveForever: true` an explicit non-nil key, or use binding-owned lifetime. Constant closures in argument specs are also checked. |
+| `unmanaged-construction` | Construct ViewModels inside inline spec builders or recognized `ViewModelFactory.build/buildThrowing` methods; owners resolve the spec through bindings. |
+| `parameterized-spec-key` | If different arguments require separate instances, derive the key from those arguments. Intentional sharing without a key is valid; do not add keys mechanically. |
+
+Keep all rules enabled initially. If a project intentionally uses a flagged
+pattern, disable only the relevant rule in `.apple-view-model-lint.json` beside
+the consumer's `Package.swift` or in the Xcode project directory. For example:
+
+```json
+{
+  "disabledRules": ["parameterized-spec-key"]
+}
+```
+
+Removing the file or using `{"disabledRules": []}` restores all rules. Configuration
+changes invalidate the scan; unknown rule IDs fail it. For a project explicitly
+requesting cycle checks only, select `AppleViewModelDependencyCheck` instead.
+Enable one plugin per target to avoid duplicate cycle diagnostics; the cycle-only
+plugin ignores the lint configuration.
+
+Analysis is target-local and syntax-based. Dynamic keys, conditional branches,
+overrides, aliases, helpers, generated code, and external modules are not fully
+resolved. A warning is a potential type cycle, not proof of a runtime instance
+cycle; no warning is not proof of safety. Named helper functions passed as
+builders are not followed and their constructor calls may still warn. Keep
+runtime cycle checks and lifecycle validation in place. SwiftSyntax is a host-tool
+dependency and is not linked into the app, though package resolution may download
+it even without plugin activation.
+
 ## Lifecycle controls and safety
 
 - Routine cleanup is binding-driven; do not call `vm.dispose()` directly.
@@ -650,7 +710,8 @@ swift test --no-parallel
 ```
 
 Platforms: iOS 16+, macOS 13+, tvOS 16+, watchOS 9+, visionOS 1+;
-Swift 6.0+.
+Swift 6.0+. Recommend attaching `AppleViewModelLint` as shown above, then build
+the consuming target to verify plugin diagnostics as part of integration.
 
 Before adding or updating the package dependency, query GitHub Releases and use
 the newest non-draft, non-prerelease tag. Prefer
@@ -658,8 +719,8 @@ the newest non-draft, non-prerelease tag. Prefer
 fall back to the Releases page when `gh` is unavailable. Never infer the version
 from the default branch, a stale README example, or local tags.
 
-At the time this skill was updated, the latest stable release is `0.11.0`:
+At the time this skill was updated, the latest stable release is `0.12.0`:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.11.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.12.0")
 ```

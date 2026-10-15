@@ -17,16 +17,23 @@ for test_bundle in "$build_dir"/*.xctest; do
     test_binaries+=("$test_binary")
   fi
 done
-if [[ ${#test_binaries[@]} -ne 1 ]]; then
-  echo "Expected one XCTest executable in $build_dir" >&2
+if [[ ${#test_binaries[@]} -eq 0 ]]; then
+  echo "Expected XCTest executables in $build_dir" >&2
   exit 1
 fi
+
+# Swift Build emits one bundle per test target; native SwiftPM can combine them.
+# Include every bundle so the scanner and runtime are both in the coverage gate.
+coverage_objects=("${test_binaries[0]}")
+for ((i = 1; i < ${#test_binaries[@]}; i++)); do
+  coverage_objects+=("-object" "${test_binaries[$i]}")
+done
 
 xcrun llvm-cov export \
   -format=lcov \
   -instr-profile="$build_dir/codecov/default.profdata" \
   -ignore-filename-regex='(/Tests/|/\.build/)' \
-  "${test_binaries[0]}" > .build/coverage.lcov
+  "${coverage_objects[@]}" > .build/coverage.lcov
 
 test -s .build/coverage.lcov
 echo "Coverage report: .build/coverage.lcov"
