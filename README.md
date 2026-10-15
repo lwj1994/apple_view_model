@@ -502,7 +502,12 @@ consumer's `Package.swift`, or in the Xcode project directory:
 
 Omit the file or use an empty list to enable all rules. The configuration applies
 to targets using `AppleViewModelLint` in that package/project; the cycle-only
-plugin ignores it. Configuration changes invalidate the scan. Invalid JSON or
+plugin ignores it. Edits to an existing configuration invalidate the scan.
+When adding or deleting this optional file, run `swift package clean` before
+building again (in Xcode, use **Product → Clean Build Folder**); build systems
+can cache the plugin plan and its input file list. Create the file before the
+first plugin build to avoid that extra clean. To restore all rules without a
+clean, keep the file and set `disabledRules` to an empty list. Invalid JSON or
 unknown rule IDs fail the scan so misspellings cannot silently disable checks.
 
 Usage lint is also syntax-based. It recognizes `viewModelBinding` and directly

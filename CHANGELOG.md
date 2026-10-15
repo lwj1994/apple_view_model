@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   `aliveForever`, construction outside recognized builders/factories, and
   parameterized specs without keys. Supports per-rule disabling through
   `.apple-view-model-lint.json`; the cycle-only plugin retains its behavior.
+  Configuration edits are incremental; adding/removing the optional config
+  requires a clean build to refresh cached plugin input lists.
 - Optional `AppleViewModelDependencyCheck` build tool plugin for SwiftPM and
   Xcode targets. Warns about potential ViewModel type dependency cycles with
   deterministic cycle paths and file/line/column locations for each edge.

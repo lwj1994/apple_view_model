@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Serial downstream build checks, including opt-in and incremental invalidation."""
+import argparse
 import json
 from pathlib import Path
 import subprocess
@@ -8,6 +9,9 @@ import tempfile
 repo = Path(__file__).resolve().parents[1]
 logs = repo / ".build" / "dependency-plugin-logs"
 logs.mkdir(parents=True, exist_ok=True)
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--build-system", choices=["native", "swiftbuild"])
+options = parser.parse_args()
 
 with tempfile.TemporaryDirectory(prefix="AppleViewModel plugin fixture ") as directory:
     fixture = Path(directory)
@@ -31,9 +35,14 @@ let package = Package(
         plugin = f'[.plugin(name: "{name}", package: "AppleViewModel")]'
         (fixture / "Package.swift").write_text(manifest.replace("PLUGINS", plugin if enabled else "[]"))
 
-    def build(label, succeeds=True):
+    def build(label, succeeds=True, replan=False):
+        # Native SwiftPM caches plugin plans. Creating/deleting an optional
+        # configuration requires a new plan; ordinary edits use declared inputs.
+        if replan:
+            subprocess.run(["swift", "package", "--package-path", str(fixture), "clean"], check=True)
         result = subprocess.run(
-            ["swift", "build", "--package-path", str(fixture)],
+            ["swift", "build", "--package-path", str(fixture)]
+            + (["--build-system", options.build_system] if options.build_system else []),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         )
         (logs / f"{label}.log").write_text(result.stdout)
@@ -97,7 +106,7 @@ final class LintHost: ViewModel {
 
     config = fixture / ".apple-view-model-lint.json"
     config.write_text(json.dumps({"disabledRules": ["parameterized-spec-key"]}))
-    configured = build("lint-config-added")
+    configured = build("lint-config-added", replan=True)
     assert "AppleViewModel [parameterized-spec-key]" not in configured
     assert "AppleViewModel [cached-view-model]" in configured
 
@@ -108,7 +117,7 @@ final class LintHost: ViewModel {
     assert "error: AppleViewModel dependency scanner:" in build("lint-invalid-config", succeeds=False)
 
     config.unlink()
-    restored = build("lint-config-removed")
+    restored = build("lint-config-removed", replan=True)
     for rule in rules:
         assert f"AppleViewModel [{rule}]" in restored
 

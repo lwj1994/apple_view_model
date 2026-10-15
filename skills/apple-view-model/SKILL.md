@@ -549,8 +549,11 @@ the consumer's `Package.swift` or in the Xcode project directory. For example:
 }
 ```
 
-Removing the file or using `{"disabledRules": []}` restores all rules. Configuration
-changes invalidate the scan; unknown rule IDs fail it. For a project explicitly
+Use `{"disabledRules": []}` to restore all rules. Edits to an existing config
+are tracked automatically; unknown rule IDs fail the scan. Create the file before
+the first plugin build. If adding or deleting it later, run `swift package clean`
+(or Xcode **Product → Clean Build Folder**) before rebuilding because build systems
+can cache the plugin plan's input list. For a project explicitly
 requesting cycle checks only, select `AppleViewModelDependencyCheck` instead.
 Enable one plugin per target to avoid duplicate cycle diagnostics; the cycle-only
 plugin ignores the lint configuration.
