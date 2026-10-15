@@ -23,7 +23,7 @@ Sources/AppleViewModel/
 - `Tests/AppleViewModelTests/`：每个核心机制对应一个测试文件。
 - `Examples/CounterApp/`：可直接粘贴到 Xcode 新建工程里跑的 demo，不编入 Package。
 - `Plugins/AppleViewModelDependencyCheck/`：可选 SwiftPM/Xcode 构建插件。
-- `Plugins/AppleViewModelLint/`：循环检查 + 四条使用规范 warning；通过项目根目录 `.apple-view-model-lint.json` 的 `disabledRules` 逐条关闭。
+- `Plugins/AppleViewModelLint/`：循环检查 + 三条使用规范 warning；通过项目根目录 `.apple-view-model-lint.json` 的 `disabledRules` 逐条关闭。
 - `Tools/DependencyScannerCore/`、`Tools/AppleViewModelDependencyScanner/`：基于 SwiftSyntax 的宿主扫描器；与运行时隔离，不要求 `@MainActor`。
 - `Tests/DependencyScannerTests/`：静态扫描测试；`scripts/test-dependency-plugin.py` 验证真实下游构建。
 
@@ -38,7 +38,7 @@ Sources/AppleViewModel/
 7. **稳定 spec 的 `watch/read` 是主入口**。两者都会创建/获取、bind 并观察 handle disposal；只有 `watch` 监听 VM 自身通知。即使 spec 带 key/tag，也继续传 spec；cached API 只查询其他路径已创建的实例，是高级 escape hatch，不能与主入口并列推荐或替代 spec-based 解析。README、Skill、示例与公开 API 注释都必须保持这个优先级。
 8. **不提供原位替换实例的 `recreate` API**。需要独立新实例时使用显式新 key；若明确接受影响所有 owners，则先全局 `recycle`，再由 resolver getter 通过 `watch/read(spec)` 走正常 cache-miss 路径创建新 handle 与 dependency tree，不迁移旧对象关系。
 9. **构建期扫描只报告潜在类型循环**。插件按 target 显式启用，默认 warning，输出循环路径与每条依赖边的位置；不能替代运行时判环，不能把不同 key/binding 的类型循环当成已证实的实例循环。
-10. **使用规范扫描保持保守**。检查缓存已解析 VM、显式无 key 的 `aliveForever`、受管 builder/factory 外构造、无 key 的参数化 spec。参数化 spec 无 key 可以是有意共享，只能提醒；普通局部解析与计算属性不能当成缓存字段。旧循环插件不自动启用新规则。
+10. **使用规范扫描保持保守**。检查缓存已解析 VM、显式无 key 的 `aliveForever`、受管 builder/factory 外构造。普通参数化 spec 无 key 不报警；普通局部解析与计算属性不能当成缓存字段。旧循环插件不自动启用新规则。
 
 ## 所有权提交与重入
 

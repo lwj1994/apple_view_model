@@ -506,9 +506,14 @@ See `examples/sharing_example.swift` for the complete example.
 
 ## Recommended build-time checks
 
+Since 0.12.1, ordinary parameterized specs may omit `key` without a warning.
+Use an argument-derived key when separate instances are intended. `aliveForever`
+still requires an explicit key. The retired `parameterized-spec-key` entry in
+`disabledRules` is accepted as a no-op for compatibility and can be removed.
+
 Recommend enabling `AppleViewModelLint` on each app or business target when
 adding or updating AppleViewModel (available since 0.12.0). It combines cycle
-checks and four usage checks. The plugin remains opt-in: importing the library
+checks and three usage checks. The plugin remains opt-in: importing the library
 does not enable it. Respect projects that deliberately leave it disabled.
 
 For a SwiftPM consumer, attach the plugin to each target containing ViewModels:
@@ -537,7 +542,6 @@ Warnings do not fail builds. Invalid configuration or unreadable inputs do.
 | `cached-view-model` | Replace stored/lazy resolved instances with computed resolver properties so later access resolves a new generation after recycle. Local temporaries are allowed. |
 | `alive-forever-key` | Give a spec with literal `aliveForever: true` an explicit non-nil key, or use binding-owned lifetime. Constant closures in argument specs are also checked. |
 | `unmanaged-construction` | Construct ViewModels inside inline spec builders or recognized `ViewModelFactory.build/buildThrowing` methods; owners resolve the spec through bindings. |
-| `parameterized-spec-key` | If different arguments require separate instances, derive the key from those arguments. Intentional sharing without a key is valid; do not add keys mechanically. |
 
 Keep all rules enabled initially. If a project intentionally uses a flagged
 pattern, disable only the relevant rule in `.apple-view-model-lint.json` beside
@@ -545,7 +549,7 @@ the consumer's `Package.swift` or in the Xcode project directory. For example:
 
 ```json
 {
-  "disabledRules": ["parameterized-spec-key"]
+  "disabledRules": ["cached-view-model"]
 }
 ```
 
@@ -722,8 +726,8 @@ the newest non-draft, non-prerelease tag. Prefer
 fall back to the Releases page when `gh` is unavailable. Never infer the version
 from the default branch, a stale README example, or local tags.
 
-At the time this skill was updated, the latest stable release is `0.12.0`:
+At the time this skill was updated, the latest stable release is `0.12.1`:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.12.0")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.12.1")
 ```

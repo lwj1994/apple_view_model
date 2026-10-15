@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-15
+
+### Removed
+
+- Remove the `parameterized-spec-key` warning. Ordinary argument specs may omit
+  a key; the `alive-forever-key` check still requires an explicit key for retained
+  specs. Keep the remaining usage checks and dependency-cycle diagnostics.
+- Accept the retired rule in `disabledRules` as a no-op so existing configuration
+  continues to build. Update the English guide and recommended skill usage.
+
 ## [0.12.0] - 2026-10-15
 
 ### Added

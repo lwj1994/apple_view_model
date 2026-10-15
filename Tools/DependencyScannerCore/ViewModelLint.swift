@@ -6,7 +6,6 @@ public enum ViewModelLintRule: String, CaseIterable, Codable, Hashable {
     case cachedViewModel = "cached-view-model"
     case aliveForeverKey = "alive-forever-key"
     case unmanagedConstruction = "unmanaged-construction"
-    case parameterizedSpecKey = "parameterized-spec-key"
 }
 
 public struct ViewModelLintConfiguration: Decodable {
@@ -18,7 +17,14 @@ public struct ViewModelLintConfiguration: Decodable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        disabledRules = try container.decodeIfPresent(Set<ViewModelLintRule>.self, forKey: .disabledRules) ?? []
+        let names = try container.decodeIfPresent(Set<String>.self, forKey: .disabledRules) ?? []
+        disabledRules = try Set(names.filter { $0 != "parameterized-spec-key" }.map { name in
+            guard let rule = ViewModelLintRule(rawValue: name) else {
+                throw DecodingError.dataCorruptedError(forKey: .disabledRules, in: container,
+                    debugDescription: "Unknown lint rule: \(name)")
+            }
+            return rule
+        })
     }
 
     private enum CodingKeys: String, CodingKey { case disabledRules }
@@ -75,8 +81,8 @@ private final class UsageVisitor: SyntaxVisitor {
     }
 
     override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
-        if let name = specName(node) {
-            checkSpec(node, name: name)
+        if specName(node) != nil {
+            checkSpec(node)
         } else {
             if let type = constructedViewModel(node), !isManagedBuilder(node) {
                 warn(.unmanagedConstruction, at: node,
@@ -95,7 +101,7 @@ private final class UsageVisitor: SyntaxVisitor {
         warnings.append(ViewModelLintWarning(rule: rule, location: file.location(node), message: message))
     }
 
-    private func checkSpec(_ node: FunctionCallExprSyntax, name: String) {
+    private func checkSpec(_ node: FunctionCallExprSyntax) {
         let key = node.arguments.first { $0.label?.text == "key" }?.expression
             ?? node.additionalTrailingClosures.first { $0.label.text == "key" }.map { ExprSyntax($0.closure) }
         let missingKey = key == nil || key.flatMap(literalResult)?.is(NilLiteralExprSyntax.self) == true
@@ -104,10 +110,6 @@ private final class UsageVisitor: SyntaxVisitor {
         if missingKey, alive.flatMap(literalResult)?.as(BooleanLiteralExprSyntax.self)?.literal.text == "true" {
             warn(.aliveForeverKey, at: node,
                  "aliveForever is true without an explicit non-nil key; managed resolution requires a key.")
-        }
-        if missingKey, name.split(separator: ".").last != "ViewModelSpec" {
-            warn(.parameterizedSpecKey, at: node,
-                 "Parameterized spec has no explicit key; different arguments can reuse the same ViewModel within one binding. Add an argument-derived key if separate instances are intended.")
         }
     }
 

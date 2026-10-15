@@ -106,15 +106,14 @@ final class ViewModelLintTests: XCTestCase {
         """).warnings.isEmpty)
     }
 
-    func testAllParameterizedSpecAritiesWarnWithoutKeys() {
+    func testAllParameterizedSpecAritiesAllowMissingKeys() {
         let report = lint("""
         let a = ViewModelSpecWithArg<Child, String>(builder: { _ in Child() })
         let b = ViewModelSpecWithArg2<Child, Int, Int>(builder: { _, _ in Child() }, key: nil)
         let c = ViewModelSpecWithArg3<Child, Int, Int, Int>(builder: { _, _, _ in Child() })
         let d: AppleViewModel.ViewModelSpecWithArg4<Child, Int, Int, Int, Int> = .init(builder: { _, _, _, _ in Child() })
         """)
-        XCTAssertEqual(report.warnings.map(\.rule), Array(repeating: .parameterizedSpecKey, count: 4))
-        XCTAssertTrue(report.warnings.allSatisfy { $0.message.contains("if separate instances are intended") })
+        XCTAssertTrue(report.warnings.isEmpty)
     }
 
     func testConstantClosuresAndAdditionalTrailingClosures() {
@@ -124,7 +123,7 @@ final class ViewModelLintTests: XCTestCase {
         let c = ViewModelSpecWithArg<Child, Int>(builder: { _ in Child() }, key: { id in log(id); return makeKey(id) }, aliveForever: { id in log(id); return true })
         """)
         XCTAssertEqual(report.warnings.map(\.rule), [
-            .aliveForeverKey, .parameterizedSpecKey, .aliveForeverKey, .parameterizedSpecKey
+            .aliveForeverKey, .aliveForeverKey
         ])
     }
 
@@ -211,7 +210,7 @@ final class ViewModelLintTests: XCTestCase {
             let filtered = lint(source, disabled: [rule])
             XCTAssertFalse(filtered.warnings.contains { $0.rule == rule })
             XCTAssertEqual(filtered.cycles.count, rule == .dependencyCycle ? 0 : 1)
-            XCTAssertEqual(filtered.warnings.count, rule == .dependencyCycle ? 4 : 3)
+            XCTAssertEqual(filtered.warnings.count, rule == .dependencyCycle ? 3 : 2)
         }
         let disabled = lint(source, disabled: Set(ViewModelLintRule.allCases))
         XCTAssertTrue(disabled.warnings.isEmpty)
@@ -221,8 +220,8 @@ final class ViewModelLintTests: XCTestCase {
     func testConfigurationDecodingRejectsUnknownRulesAndInvalidJSON() throws {
         let decoder = JSONDecoder()
         XCTAssertTrue(try decoder.decode(ViewModelLintConfiguration.self, from: Data("{}".utf8)).disabledRules.isEmpty)
-        let config = try decoder.decode(ViewModelLintConfiguration.self, from: Data(#"{"disabledRules":["parameterized-spec-key"]}"#.utf8))
-        XCTAssertEqual(config.disabledRules, [.parameterizedSpecKey])
+        let config = try decoder.decode(ViewModelLintConfiguration.self, from: Data(#"{"disabledRules":["cached-view-model","parameterized-spec-key"]}"#.utf8))
+        XCTAssertEqual(config.disabledRules, [.cachedViewModel])
         XCTAssertThrowsError(try decoder.decode(ViewModelLintConfiguration.self, from: Data(#"{"disabledRules":["typo"]}"#.utf8)))
         XCTAssertThrowsError(try decoder.decode(ViewModelLintConfiguration.self, from: Data("invalid".utf8)))
     }

@@ -99,16 +99,23 @@ final class LintHost: ViewModel {
     lint_output = build("lint-all-rules")
     lint_generated = list((fixture / ".build").rglob("AppleViewModelLint.generated.swift"))
     assert lint_generated
-    rules = ["cached-view-model", "alive-forever-key", "unmanaged-construction", "parameterized-spec-key"]
-    for line, rule in zip([3, 5, 6, 7], rules):
+    rules = ["cached-view-model", "alive-forever-key", "unmanaged-construction"]
+    for line, rule in zip([3, 5, 6], rules):
         assert f"AppleViewModel [{rule}]" in lint_output
         assert f"Usage.swift:{line}:" in lint_output
+
+    assert "AppleViewModel [parameterized-spec-key]" not in lint_output
 
     config = fixture / ".apple-view-model-lint.json"
     config.write_text(json.dumps({"disabledRules": ["parameterized-spec-key"]}))
     configured = build("lint-config-added", replan=True)
     assert "AppleViewModel [parameterized-spec-key]" not in configured
     assert "AppleViewModel [cached-view-model]" in configured
+
+    config.write_text(json.dumps({"disabledRules": ["cached-view-model"]}))
+    configured = build("lint-active-rule-disabled")
+    assert "AppleViewModel [cached-view-model]" not in configured
+    assert "AppleViewModel [alive-forever-key]" in configured
 
     config.write_text(json.dumps({"disabledRules": rules + ["dependency-cycle"]}))
     assert "AppleViewModel [" not in build("lint-config-edited")
