@@ -264,9 +264,7 @@ private func isBinding(_ value: LocalValue) -> Bool {
 private func localValue(named name: String, at call: FunctionCallExprSyntax) -> LocalValue? {
     var ancestor = call.parent
     while let node = ancestor {
-        let statements = node.as(CodeBlockSyntax.self)?.statements
-            ?? node.as(ClosureExprSyntax.self)?.statements
-        if let statements {
+        if let statements = localStatements(in: node) {
             for item in statements.reversed() where item.position < call.position {
                 guard let declaration = item.item.as(VariableDeclSyntax.self) else { continue }
                 for binding in declaration.bindings where binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text == name {

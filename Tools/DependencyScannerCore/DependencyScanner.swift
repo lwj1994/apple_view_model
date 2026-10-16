@@ -319,9 +319,7 @@ private final class ResolutionVisitor: SyntaxVisitor {
         -> (found: Bool, target: SpecTarget?) {
         var ancestor = Syntax(call).parent
         while let node = ancestor {
-            let statements = node.as(CodeBlockSyntax.self)?.statements
-                ?? node.as(ClosureExprSyntax.self)?.statements
-            if let statements {
+            if let statements = localStatements(in: node) {
                 for item in statements.reversed() where item.position < call.position {
                     guard let declaration = item.item.as(VariableDeclSyntax.self) else { continue }
                     for binding in declaration.bindings {
@@ -438,10 +436,21 @@ func scopeName(_ node: Syntax) -> String? {
     return nil
 }
 
+func localStatements(in node: Syntax) -> CodeBlockItemListSyntax? {
+    if let block = node.as(CodeBlockSyntax.self) { return block.statements }
+    if let closure = node.as(ClosureExprSyntax.self) { return closure.statements }
+    // Implicit getter statements belong directly to AccessorBlockSyntax,
+    // without an enclosing CodeBlockSyntax.
+    if let block = node.as(AccessorBlockSyntax.self), case .getter(let statements) = block.accessors {
+        return statements
+    }
+    return nil
+}
+
 func isLocal(_ node: some SyntaxProtocol) -> Bool {
     var ancestor = Syntax(node).parent
     while let parent = ancestor {
-        if parent.is(CodeBlockSyntax.self) || parent.is(ClosureExprSyntax.self) { return true }
+        if localStatements(in: parent) != nil { return true }
         ancestor = parent.parent
     }
     return false

@@ -150,6 +150,48 @@ final class DependencyScannerTests: XCTestCase {
         """).isEmpty)
     }
 
+    func testImplicitGetterSpecsUseLexicalScope() {
+        let cycles = scan("""
+        let spec = ViewModelSpec<B> { B() }
+        class A: ViewModel {
+            var first: A {
+                let spec = ViewModelSpec<A> { A() }
+                return viewModelBinding.read(spec)
+            }
+            var second: A {
+                let spec: ViewModelSpec<A> = .init { A() }
+                return viewModelBinding.watch(spec)
+            }
+        }
+        class B: ViewModel {}
+        """)
+        XCTAssertEqual(cycles.map(\.path), ["A -> A"])
+        XCTAssertEqual(cycles.first?.edges.first?.location.line, 5)
+    }
+
+    func testImplicitGetterShadowsStayLocal() {
+        XCTAssertTrue(scan("""
+        let spec = ViewModelSpec<B> { B() }
+        let selfSpec = ViewModelSpec<A> { A() }
+        class A: ViewModel {
+            var localSpec: ViewModelSpec<A> {
+                let spec = ViewModelSpec<A> { A() }
+                return spec
+            }
+            var global: B { viewModelBinding.read(spec) }
+            var unknown: B {
+                let selfSpec = makeSpec()
+                return viewModelBinding.read(selfSpec)
+            }
+            var independent: A {
+                let viewModelBinding = ViewModelBinding()
+                return viewModelBinding.read(selfSpec)
+            }
+        }
+        class B: ViewModel {}
+        """).isEmpty)
+    }
+
     func testAmbiguousDeclarationsAreNotGuessed() {
         let files = [
             ScannerSource(path: "/One.swift", text: "private let spec = ViewModelSpec<A> { A() }"),

@@ -726,8 +726,8 @@ the newest non-draft, non-prerelease tag. Prefer
 fall back to the Releases page when `gh` is unavailable. Never infer the version
 from the default branch, a stale README example, or local tags.
 
-At the time this skill was updated, the latest stable release is `0.12.1`:
+At the time this skill was updated, the latest stable release is `0.12.2`:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.12.1")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.12.2")
 ```

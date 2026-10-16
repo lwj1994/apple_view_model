@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-10-16
+
+### Fixed
+
+- Recognize local variables in implicit computed-property and subscript getters,
+  preventing false `cached-view-model` warnings for locally resolved ViewModels.
+- Resolve getter-local bindings and specs within their lexical scopes while
+  preserving warnings for stored/lazy ViewModel caches and dependency cycles.
+
 ## [0.12.1] - 2026-10-15
 
 ### Removed

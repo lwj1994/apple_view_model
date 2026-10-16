@@ -86,6 +86,57 @@ final class ViewModelLintTests: XCTestCase {
         """).warnings.map(\.rule), [.cachedViewModel])
     }
 
+    func testComputedAccessorsAllowLocalResolvedViewModels() {
+        XCTAssertTrue(lint("""
+        class Host: NSObject {
+            var implicit: Child {
+                let session = viewModelBinding.read(childSpec)
+                configure(session)
+                return session
+            }
+            var explicit: Child {
+                get {
+                    let session = viewModelBinding.watch(childSpec)
+                    return session
+                }
+            }
+            var throwing: Child {
+                get throws {
+                    let session = try viewModelBinding.readThrowing(childSpec)
+                    return session
+                }
+            }
+            subscript(index: Int) -> Child {
+                let session = try! viewModelBinding.watchThrowing(childSpec)
+                return session
+            }
+        }
+        """).warnings.isEmpty)
+    }
+
+    func testImplicitGetterLocalsDoNotHideStoredAssignmentsOrLeakToOtherMembers() {
+        let report = lint("""
+        class Host: NSObject {
+            var child: Child?
+            var resolved: Child? {
+                let binding = ViewModelBinding()
+                var child: Child?
+                child = binding.read(childSpec)
+                self.child = binding.watch(childSpec)
+                return child
+            }
+            var unrelated: Child? {
+                let viewModelBinding = OtherReader()
+                self.child = viewModelBinding.read(childSpec)
+                return child
+            }
+            lazy var cached = viewModelBinding.read(childSpec)
+        }
+        """)
+        XCTAssertEqual(report.warnings.map(\.rule), [.cachedViewModel, .cachedViewModel])
+        XCTAssertEqual(report.warnings.map(\.location.line), [9, 17])
+    }
+
     func testLiteralAliveForeverWithoutKeyAndTypedInit() {
         let report = lint("""
         let a = ViewModelSpec<Child>(aliveForever: true) { Child() }
