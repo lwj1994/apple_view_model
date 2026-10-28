@@ -222,7 +222,7 @@ from that ViewModel; otherwise create it through `taskScope`.
 Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.12.2")
+.package(url: "https://github.com/lwj1994/apple_view_model.git", from: "0.13.0")
 ```
 
 Add `"AppleViewModel"` to your target dependencies.
