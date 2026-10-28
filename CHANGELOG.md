@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- `AppleViewModelLintFix` command plugin (`swift package apple-view-model-fix`)
+  and a scanner `--fix` mode apply safe fixes: a stored or `lazy` resolved
+  property becomes a computed property, and an `aliveForever` spec gets a key
+  named after its variable.
+
+### Fixed
+
+- `NSObject.viewModelBinding` installs a fresh binding when the previous one was
+  disposed ahead of the host, instead of handing out a disposed binding whose
+  next resolution traps.
+- Document the refresh contract of `ViewModelBinding.onUpdate` and
+  `ViewModelBindingRefreshable` (a coalesced request whose read must be
+  deferred), and the cooperative-cancellation caveat for `viewModelBinding`
+  access after `await` in `taskScope` Tasks.
+
 ## [0.12.2] - 2026-10-16
 
 ### Fixed

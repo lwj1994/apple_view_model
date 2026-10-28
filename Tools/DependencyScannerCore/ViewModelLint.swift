@@ -30,10 +30,19 @@ public struct ViewModelLintConfiguration: Decodable {
     private enum CodingKeys: String, CodingKey { case disabledRules }
 }
 
+/// A single text replacement, in UTF-8 offsets of the scanned source.
+public struct ViewModelLintEdit: Equatable {
+    public let offset: Int
+    public let length: Int
+    public let replacement: String
+}
+
 public struct ViewModelLintWarning: Equatable {
     public let rule: ViewModelLintRule
     public let location: DependencyLocation
     public let message: String
+    /// A safe mechanical fix, when one exists for this occurrence.
+    public let fix: ViewModelLintEdit?
 
     public var diagnostic: String {
         "\(location.diagnosticPrefix): warning: AppleViewModel [\(rule.rawValue)]: \(message)"
@@ -60,6 +69,27 @@ public enum ViewModelLint {
             return visitor.warnings
         }
         return ViewModelLintReport(cycles: cycles, warnings: warnings)
+    }
+
+    /// Applies every safe fix and returns only the sources that changed.
+    /// Overlapping edits keep the one that starts last; a rescan finds the rest.
+    public static func fix(
+        _ sources: [ScannerSource],
+        configuration: ViewModelLintConfiguration = .init()
+    ) -> [ScannerSource] {
+        let warnings = scan(sources, configuration: configuration).warnings
+        return sources.compactMap { source in
+            let edits = warnings.filter { $0.location.path == source.path }
+                .compactMap(\.fix).sorted { $0.offset > $1.offset }
+            guard !edits.isEmpty else { return nil }
+            var bytes = Array(source.text.utf8)
+            var limit = Int.max
+            for edit in edits where edit.offset + edit.length <= limit {
+                bytes.replaceSubrange(edit.offset..<(edit.offset + edit.length), with: Array(edit.replacement.utf8))
+                limit = edit.offset
+            }
+            return ScannerSource(path: source.path, text: String(decoding: bytes, as: UTF8.self))
+        }
     }
 }
 
@@ -90,15 +120,95 @@ private final class UsageVisitor: SyntaxVisitor {
             }
             if isResolution(node), let property = storedDestination(node) {
                 warn(.cachedViewModel, at: node,
-                     "Resolved ViewModel stored in '\(property)' can remain stale after recycle; use a computed property that calls watch/read(spec).")
+                     "Resolved ViewModel stored in '\(property)' can remain stale after recycle; use a computed property that calls watch/read(spec).",
+                     fix: cachedFix(node))
             }
         }
         return .visitChildren
     }
 
-    private func warn(_ rule: ViewModelLintRule, at node: some SyntaxProtocol, _ message: String) {
+    private func warn(_ rule: ViewModelLintRule, at node: some SyntaxProtocol, _ message: String,
+                      fix: ViewModelLintEdit? = nil) {
         guard !configuration.disabledRules.contains(rule) else { return }
-        warnings.append(ViewModelLintWarning(rule: rule, location: file.location(node), message: message))
+        warnings.append(ViewModelLintWarning(rule: rule, location: file.location(node), message: message, fix: fix))
+    }
+
+    /// `lazy var child = binding.read(spec)` becomes `var child: Child { binding.read(spec) }`.
+    /// Needs a type from the annotation or the spec's explicit generic argument;
+    /// throwing, async, observed and assigned storage is left for a person.
+    private func cachedFix(_ call: FunctionCallExprSyntax) -> ViewModelLintEdit? {
+        var value = Syntax(call)
+        while let parent = value.parent, parent.is(ForceUnwrapExprSyntax.self) { value = parent }
+        guard let initializer = value.parent?.as(InitializerClauseSyntax.self),
+              let binding = initializer.parent?.as(PatternBindingSyntax.self),
+              binding.accessorBlock == nil,
+              let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text,
+              let declaration = binding.parent?.parent?.as(VariableDeclSyntax.self),
+              declaration.bindings.count == 1,
+              let type = binding.typeAnnotation?.type.trimmedDescription ?? resolvedTypeText(call)
+        else { return nil }
+        // Keep attributes, access control and spacing; only `lazy` goes away.
+        let start = declaration.positionAfterSkippingLeadingTrivia.utf8Offset
+        var prefix = Array(declaration.description.utf8)[
+            (start - declaration.position.utf8Offset)..<(declaration.bindingSpecifier.positionAfterSkippingLeadingTrivia.utf8Offset - declaration.position.utf8Offset)]
+        if let lazy = declaration.modifiers.first(where: { $0.name.text == "lazy" }) {
+            let from = lazy.positionAfterSkippingLeadingTrivia.utf8Offset - start
+            let to = lazy.endPosition.utf8Offset - start
+            prefix.removeSubrange((prefix.startIndex + from)..<(prefix.startIndex + to))
+        }
+        let text = String(decoding: prefix, as: UTF8.self) + "var \(name): \(type) { \(value.trimmedDescription) }"
+        return replacing(declaration, with: text)
+    }
+
+    /// The explicit ViewModel type argument of the spec a resolution reads.
+    private func resolvedTypeText(_ call: FunctionCallExprSyntax) -> String? {
+        guard let argument = call.arguments.first?.expression else { return nil }
+        if let inline = genericArgument(of: argument) { return inline }
+        let reference = argument.as(FunctionCallExprSyntax.self)?.calledExpression ?? argument
+        guard let name = expressionName(reference),
+              name.contains(".") || localValue(named: name, at: call) == nil,
+              let spec = index.resolveValue(name, scope: scope(of: call), file: file.path) else { return nil }
+        if let type = spec.type.flatMap(genericArgument(of:)) { return type }
+        return spec.initializer.flatMap(genericArgument(of:))
+    }
+
+    /// Adds a key named after the spec's variable before `aliveForever:`, or
+    /// replaces a literal nil key. Argument specs get a key built from their arguments.
+    private func keyFix(_ call: FunctionCallExprSyntax) -> ViewModelLintEdit? {
+        guard let alive = call.arguments.first(where: { $0.label?.text == "aliveForever" }),
+              let spec = specName(call) else { return nil }
+        let bare = spec.hasPrefix("AppleViewModel.") ? String(spec.dropFirst(15)) : spec
+        let suffix = bare.dropFirst("ViewModelSpecWithArg".count)
+        let arity = bare == "ViewModelSpec" ? 0 : suffix.isEmpty ? 1 : Int(suffix)
+        guard let arity else { return nil }
+        let base = keyBase(call)
+        let key = arity == 0
+            ? "\"\(base)\""
+            : "{ \"\(base)" + (0..<arity).map { "-\\($\($0))" }.joined() + "\" }"
+        if let existing = call.arguments.first(where: { $0.label?.text == "key" }) {
+            return replacing(existing.expression, with: key)
+        }
+        // Keep one argument per line when the call is laid out that way.
+        let spacing = alive.leadingTrivia
+        let separator = spacing.contains(where: \.isNewline) ? "," + spacing.description : ", "
+        return ViewModelLintEdit(offset: alive.positionAfterSkippingLeadingTrivia.utf8Offset, length: 0,
+                                 replacement: "key: \(key)\(separator)")
+    }
+
+    private func keyBase(_ call: FunctionCallExprSyntax) -> String {
+        if let binding = call.parent?.as(InitializerClauseSyntax.self)?.parent?.as(PatternBindingSyntax.self),
+           let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text {
+            let trimmed = name.hasSuffix("Spec") ? String(name.dropLast(4)) : name
+            if !trimmed.isEmpty { return trimmed }
+        }
+        guard let type = genericArgument(of: ExprSyntax(call)), let first = type.first else { return "viewModel" }
+        return first.lowercased() + type.dropFirst().prefix { $0.isLetter || $0.isNumber }
+    }
+
+    private func replacing(_ node: some SyntaxProtocol, with text: String) -> ViewModelLintEdit {
+        let start = node.positionAfterSkippingLeadingTrivia.utf8Offset
+        return ViewModelLintEdit(offset: start, length: node.endPositionBeforeTrailingTrivia.utf8Offset - start,
+                                 replacement: text)
     }
 
     private func checkSpec(_ node: FunctionCallExprSyntax) {
@@ -109,7 +219,8 @@ private final class UsageVisitor: SyntaxVisitor {
             ?? node.additionalTrailingClosures.first { $0.label.text == "aliveForever" }.map { ExprSyntax($0.closure) }
         if missingKey, alive.flatMap(literalResult)?.as(BooleanLiteralExprSyntax.self)?.literal.text == "true" {
             warn(.aliveForeverKey, at: node,
-                 "aliveForever is true without an explicit non-nil key; managed resolution requires a key.")
+                 "aliveForever is true without an explicit non-nil key; managed resolution requires a key.",
+                 fix: keyFix(node))
         }
     }
 
@@ -233,6 +344,23 @@ func isStoredProperty(_ binding: PatternBindingSyntax) -> Bool {
     guard let block = binding.accessorBlock else { return true }
     guard case .accessors(let accessors) = block.accessors else { return false }
     return accessors.allSatisfy { ["willSet", "didSet"].contains($0.accessorSpecifier.text) }
+}
+
+/// The first generic argument of a spec type or spec construction, as written.
+private func genericArgument(of node: some SyntaxProtocol) -> String? {
+    if let type = node.as(TypeSyntax.self) {
+        if let optional = type.as(OptionalTypeSyntax.self) { return genericArgument(of: optional.wrappedType) }
+        let clause = type.as(IdentifierTypeSyntax.self)?.genericArgumentClause
+            ?? type.as(MemberTypeSyntax.self)?.genericArgumentClause
+        return clause?.arguments.first?.argument.trimmedDescription
+    }
+    guard let call = node.as(FunctionCallExprSyntax.self) else { return nil }
+    var callee = call.calledExpression
+    if let member = callee.as(MemberAccessExprSyntax.self), member.declName.baseName.text == "init",
+       let base = member.base { callee = base }
+    guard let name = expressionName(callee), isSpec(name) else { return nil }
+    return callee.as(GenericSpecializationExprSyntax.self)?
+        .genericArgumentClause.arguments.first?.argument.trimmedDescription
 }
 
 private func nominalTypeName(_ type: TypeSyntax) -> String? {

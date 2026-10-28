@@ -30,6 +30,23 @@ final class NSObjectBindingTests: XCTestCase {
         XCTAssertEqual(host.updateCount, 2)
     }
 
+    func test_disposed_binding_is_replaced_on_next_access() {
+        let host = RefreshableHost()
+        let spec = ViewModelSpec<CounterViewModel> { CounterViewModel() }
+
+        let first = host.viewModelBinding
+        first.dispose()
+
+        let second = host.viewModelBinding
+        XCTAssertFalse(second === first)
+        XCTAssertFalse(second.isDisposed)
+        XCTAssertTrue(host.viewModelBinding === second)
+
+        // The replacement routes refreshes to the host like the original did.
+        second.watch(spec).increment()
+        XCTAssertEqual(host.updateCount, 1)
+    }
+
     func test_binding_disposes_when_host_is_released() async {
         let spec = ViewModelSpec<CounterViewModel>(key: "object-host") { CounterViewModel() }
         var retainedViewModel: CounterViewModel?

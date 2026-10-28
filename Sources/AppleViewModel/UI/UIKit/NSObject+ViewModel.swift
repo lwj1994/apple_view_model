@@ -5,6 +5,13 @@ import ObjectiveC
 /// Conformed-to by object hosts that want to be notified when any watched
 /// ViewModel emits a change.
 ///
+/// The callback is a refresh request, not the final value. Inside one
+/// synchronous propagation transaction only the first notification reaches a
+/// root binding; later changes in the same transaction (a derived ViewModel
+/// reacting through `listen`, for example) are coalesced into that call. Defer
+/// the actual read with `setNeedsLayout()` / `setNeedsDisplay()` rather than
+/// rendering synchronously inside the callback.
+///
 /// Typical UIKit use:
 /// ```swift
 /// final class TodoListView: UIView, ViewModelBindingRefreshable {
@@ -54,9 +61,13 @@ public extension NSObject {
     ///   `refresh` closure routes to `viewModelBindingDidUpdate()`.
     @MainActor
     var viewModelBinding: ViewModelBinding {
-        if let holder = objc_getAssociatedObject(self, &objectViewModelBindingAssociationKey) as? ObjectViewModelBindingHolder {
+        if let holder = objc_getAssociatedObject(self, &objectViewModelBindingAssociationKey) as? ObjectViewModelBindingHolder,
+           !holder.binding.isDisposed {
             return holder.binding
         }
+        // A binding disposed ahead of the host (explicit `dispose()`, cell reuse
+        // teardown) must not be handed out again: resolution on it fails fast.
+        // Install a fresh one, mirroring `View.viewModelBinding` on Android.
         let binding = HostedViewModelBinding()
         binding.refresh = { [weak self] in
             guard let refreshable = self as? ViewModelBindingRefreshable else { return }

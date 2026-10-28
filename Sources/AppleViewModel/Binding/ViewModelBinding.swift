@@ -148,6 +148,13 @@ open class ViewModelBinding {
 
     /// Called when any watched ViewModel triggers `notifyListeners`.
     /// Subclasses (SwiftUI host, UIKit view controller, etc.) override this to refresh UI.
+    ///
+    /// Treat it as a refresh request: within one synchronous propagation
+    /// transaction a root binding receives only the first notification, and later
+    /// changes in the same transaction are coalesced into it. Read state when the
+    /// deferred refresh runs (`objectWillChange`, `setNeedsLayout()`), and use
+    /// `listen` / `listenState` / `listenStateSelect` for reactions that must see
+    /// every transition.
     open func onUpdate() {}
 
     open func onPause() {}

@@ -28,7 +28,9 @@ final class CounterViewModel: StateViewModel<CounterState> {
 
 /// Declare a stable spec at file scope and let the resolving binding own the
 /// instance by default. Add a key or `aliveForever` only when cross-binding
-/// sharing or retention is an explicit requirement.
-let counterSpec = ViewModelSpec<CounterViewModel> {
+/// sharing or retention is an explicit requirement. Spec initializers are
+/// main-actor isolated, so the global spec is marked `@MainActor`; this keeps
+/// it compiling in targets without default MainActor isolation.
+@MainActor let counterSpec = ViewModelSpec<CounterViewModel> {
     CounterViewModel()
 }

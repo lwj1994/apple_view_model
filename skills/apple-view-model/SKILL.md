@@ -237,12 +237,16 @@ intentionally independent from that ViewModel.
   builder when the key is missing or computes to `nil`; the Store enforces the
   same invariant for internal factories.
 
+Mark global specs `@MainActor`: spec initializers are main-actor isolated, so an
+unannotated global spec fails to compile unless the target uses default MainActor
+isolation.
+
 ```swift
 // Managed by one resolving binding by default.
-let catalogSpec = ViewModelSpec<CatalogViewModel> { CatalogViewModel() }
+@MainActor let catalogSpec = ViewModelSpec<CatalogViewModel> { CatalogViewModel() }
 
 // Explicit app-wide sharing and retention, only when required.
-let sessionSpec = ViewModelSpec<SessionViewModel>(
+@MainActor let sessionSpec = ViewModelSpec<SessionViewModel>(
     key: "app-session",
     aliveForever: true
 ) { SessionViewModel() }
@@ -368,8 +372,8 @@ Expose dependencies through computed resolver properties. Do not retain a
 nested ViewModel in `lazy var`, a stored property, or an ad-hoc cache.
 
 ```swift
-let cartSpec = ViewModelSpec<CartViewModel> { CartViewModel() }
-let pricingSpec = ViewModelSpec<PricingViewModel> { PricingViewModel() }
+@MainActor let cartSpec = ViewModelSpec<CartViewModel> { CartViewModel() }
+@MainActor let pricingSpec = ViewModelSpec<PricingViewModel> { PricingViewModel() }
 
 @MainActor
 final class CheckoutViewModel: ViewModel {
@@ -445,7 +449,7 @@ final class DraftViewModel: ViewModel {
     }
 }
 
-let draftViewModelSpec = ViewModelSpecWithArg<DraftViewModel, String>(
+@MainActor let draftViewModelSpec = ViewModelSpecWithArg<DraftViewModel, String>(
     builder: { DraftViewModel(documentID: $0) },
     key: { "draft-\($0)" }
 )
@@ -542,6 +546,10 @@ Warnings do not fail builds. Invalid configuration or unreadable inputs do.
 | `cached-view-model` | Replace stored/lazy resolved instances with computed resolver properties so later access resolves a new generation after recycle. Local temporaries are allowed. |
 | `alive-forever-key` | Give a spec with literal `aliveForever: true` an explicit non-nil key, or use binding-owned lifetime. Constant closures in argument specs are also checked. |
 | `unmanaged-construction` | Construct ViewModels inside inline spec builders or recognized `ViewModelFactory.build/buildThrowing` methods; owners resolve the spec through bindings. |
+
+`cached-view-model` and `alive-forever-key` have safe automatic fixes: run
+`swift package --allow-writing-to-package-directory apple-view-model-fix`, or the
+Xcode command plugin `AppleViewModelLintFix`.
 
 Keep all rules enabled initially. If a project intentionally uses a flagged
 pattern, disable only the relevant rule in `.apple-view-model-lint.json` beside

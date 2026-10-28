@@ -27,6 +27,10 @@ let package = Package(
         .plugin(
             name: "AppleViewModelLint",
             targets: ["AppleViewModelLint"]
+        ),
+        .plugin(
+            name: "AppleViewModelLintFix",
+            targets: ["AppleViewModelLintFix"]
         )
     ],
     dependencies: [
@@ -62,6 +66,19 @@ let package = Package(
         .plugin(
             name: "AppleViewModelLint",
             capability: .buildTool(),
+            dependencies: ["AppleViewModelDependencyScanner"]
+        ),
+        .plugin(
+            name: "AppleViewModelLintFix",
+            capability: .command(
+                intent: .custom(
+                    verb: "apple-view-model-fix",
+                    description: "Apply safe AppleViewModelLint fixes to Swift sources"
+                ),
+                permissions: [
+                    .writeToPackageDirectory(reason: "Rewrites Swift sources to apply AppleViewModelLint fixes")
+                ]
+            ),
             dependencies: ["AppleViewModelDependencyScanner"]
         ),
         .testTarget(

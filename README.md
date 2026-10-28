@@ -270,18 +270,21 @@ Any shared dependency — AuthService, ThemeStore, Logger — works the same way
 
 ### 2. ViewModelSpec — the registration
 
-Declare how the VM is built and whether instances are shared. Specs are typically module-level constants:
+Declare how the VM is built and whether instances are shared. Specs are typically module-level constants.
+Spec initializers are main-actor isolated, so mark a global spec `@MainActor`. The attribute is optional in a
+target that uses default MainActor isolation, as new Xcode app targets do; without it, an unannotated global spec
+fails to compile.
 
 ```swift
 // Plain spec: one instance of this VM type per binding (private to each host)
-let counterSpec = ViewModelSpec<CounterViewModel> { CounterViewModel() }
+@MainActor let counterSpec = ViewModelSpec<CounterViewModel> { CounterViewModel() }
 
 // Intentional app-wide service: same key → same instance across all bindings.
 // aliveForever skips automatic disposal at zero owners, but recycle/reset still dispose it.
-let authSpec = ViewModelSpec<AuthViewModel>(key: "auth", aliveForever: true) { AuthViewModel() }
+@MainActor let authSpec = ViewModelSpec<AuthViewModel>(key: "auth", aliveForever: true) { AuthViewModel() }
 
 // Parameterized spec: different key per argument, same-argument instances shared
-let userSpec = ViewModelSpecWithArg<UserViewModel, String>(
+@MainActor let userSpec = ViewModelSpecWithArg<UserViewModel, String>(
     builder: { UserViewModel(userId: $0) },
     key: { "user-\($0)" }
 )
@@ -295,7 +298,7 @@ are task-local. `setProxy` / `clearProxy` remain as the legacy global fallback.
 When a factory can fail, use `throwingBuilder` with the recoverable binding API:
 
 ```swift
-let profileSpec = ViewModelSpec<ProfileViewModel>(throwingBuilder: {
+@MainActor let profileSpec = ViewModelSpec<ProfileViewModel>(throwingBuilder: {
     try ProfileViewModel.load()
 })
 
@@ -312,8 +315,8 @@ instance within one binding. Calling an unkeyed argument spec with different
 arguments does the same thing: the later builder does not run.
 
 ```swift
-let firstUserSpec = ViewModelSpec<UserViewModel> { UserViewModel(userId: "A") }
-let secondUserSpec = ViewModelSpec<UserViewModel> { UserViewModel(userId: "B") }
+@MainActor let firstUserSpec = ViewModelSpec<UserViewModel> { UserViewModel(userId: "A") }
+@MainActor let secondUserSpec = ViewModelSpec<UserViewModel> { UserViewModel(userId: "B") }
 
 binding.read(firstUserSpec)   // Creates UserViewModel(userId: "A").
 binding.read(secondUserSpec)  // Reuses that instance; does not build user B.
@@ -388,8 +391,8 @@ Expose dependencies through computed properties. Do not retain a nested ViewMode
 
 ```swift
 // Module A: export a managed capability. It is not global by default.
-let sessionSpec = ViewModelSpec<SessionViewModel> { SessionViewModel() }
-let cartSpec = ViewModelSpec<CartViewModel> { CartViewModel() }
+@MainActor let sessionSpec = ViewModelSpec<SessionViewModel> { SessionViewModel() }
+@MainActor let cartSpec = ViewModelSpec<CartViewModel> { CartViewModel() }
 
 // Module B: inject it
 @MainActor
@@ -486,7 +489,9 @@ plugins: [
 In Xcode, select `AppleViewModelLint` in **Build Phases → Run Build Tool
 Plug-ins**. All findings are warnings with file, line, and column positions.
 Usage warnings also include a rule ID; cycle warnings include the dependency
-path. They do not change runtime behavior or fail the build.
+path. They do not change runtime behavior or fail the build. See
+[RULES.md](Plugins/AppleViewModelLint/RULES.md) for good and bad examples of
+every rule.
 
 | Rule ID | Warning |
 | --- | --- |
@@ -494,6 +499,22 @@ path. They do not change runtime behavior or fail the build.
 | `alive-forever-key` | A spec explicitly sets `aliveForever` to `true` but omits `key` or provides literal `nil`. Single-expression constant closures are also recognized for argument specs. |
 | `unmanaged-construction` | A locally identified ViewModel type is constructed outside an inline spec builder or a recognized `ViewModelFactory.build/buildThrowing` method. Keep construction inside factories and resolve through bindings. |
 | `dependency-cycle` | The existing potential type dependency cycle check. |
+
+`cached-view-model` and `alive-forever-key` have safe automatic fixes. Apply them
+with the `AppleViewModelLintFix` command plugin, which asks for permission to
+write sources:
+
+```sh
+swift package --allow-writing-to-package-directory apple-view-model-fix
+swift package --allow-writing-to-package-directory apple-view-model-fix --target MyFeature
+```
+
+In Xcode, right-click the project in the navigator and choose
+**AppleViewModelLintFix**. A stored or `lazy` resolved property becomes a
+computed property when its type is known from an annotation or the spec's
+explicit generic argument, and an `aliveForever` spec gets a key named after its
+variable. The plugin honors `.apple-view-model-lint.json` and prints the warnings
+that still need a manual change.
 
 To turn off individual rules, create `.apple-view-model-lint.json` beside the
 consumer's `Package.swift`, or in the Xcode project directory:

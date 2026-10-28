@@ -182,10 +182,16 @@ open class ViewModel: InstanceLifeCycle, ObservableObject {
     /// watching it. `read` keeps ownership without that notification forwarding.
     /// Register explicit `listen` / `listenState` / `listenStateSelect` callbacks
     /// once during initialization for business reactions to a dependency.
+    ///
+    /// Accessing this after disposal is a programmer error and traps. Task
+    /// cancellation is cooperative: a `taskScope` Task resumes after `await` even
+    /// though disposal cancelled it, so check `Task.isCancelled` or `isDisposed`
+    /// after every suspension point before touching dependencies.
     open var viewModelBinding: ViewModelBinding {
         precondition(
             !isDisposed,
-            "Cannot resolve dependencies from a disposed \(type(of: self))."
+            "Cannot resolve dependencies from a disposed \(type(of: self)). "
+                + "In async code, check Task.isCancelled / isDisposed after each await."
         )
         if let dependencyBinding { return dependencyBinding }
         let created = ViewModelDependencyBinding(

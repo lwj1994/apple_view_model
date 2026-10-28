@@ -22,7 +22,7 @@ final class DraftViewModel: ViewModel {
 /// automatically reclaimed after the final page unbinds. The document ID also
 /// identifies the shared scope and prevents concurrent edits of different
 /// documents from accidentally sharing state.
-let draftViewModelSpec = ViewModelSpecWithArg<DraftViewModel, String>(
+@MainActor let draftViewModelSpec = ViewModelSpecWithArg<DraftViewModel, String>(
     builder: { DraftViewModel(documentID: $0) },
     key: { "draft-\($0)" }
 )

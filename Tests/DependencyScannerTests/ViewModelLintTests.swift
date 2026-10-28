@@ -277,6 +277,90 @@ final class ViewModelLintTests: XCTestCase {
         XCTAssertThrowsError(try decoder.decode(ViewModelLintConfiguration.self, from: Data("invalid".utf8)))
     }
 
+    private func fixed(_ body: String) -> String? {
+        ViewModelLint.fix([ScannerSource(path: "/Feature.swift", text: body)]).first?.text
+    }
+
+    func testCachedViewModelFixBecomesComputedProperty() {
+        XCTAssertEqual(fixed(#"""
+        class Child: ViewModel {}
+        let childSpec = ViewModelSpec<Child> { Child() }
+        final class Host {
+            let binding = ViewModelBinding()
+            lazy var child = binding.read(childSpec)
+            @MainActor private lazy var typed: Child = binding.watch(childSpec)
+            lazy var inline = binding.read(ViewModelSpec<Child> { Child() })
+        }
+        """#), #"""
+        class Child: ViewModel {}
+        let childSpec = ViewModelSpec<Child> { Child() }
+        final class Host {
+            let binding = ViewModelBinding()
+            var child: Child { binding.read(childSpec) }
+            @MainActor private var typed: Child { binding.watch(childSpec) }
+            var inline: Child { binding.read(ViewModelSpec<Child> { Child() }) }
+        }
+        """#)
+    }
+
+    func testCachedViewModelFixSkipsUnknownTypesAndUnsafeStorage() {
+        let source = #"""
+        class Child: ViewModel {}
+        let childSpec = ViewModelSpec<Child> { Child() }
+        let inferredSpec = ViewModelSpec { Child() }
+        final class Host {
+            let binding = ViewModelBinding()
+            lazy var unknown = binding.read(inferredSpec)
+            lazy var thrown = try! binding.readThrowing(childSpec)
+            var child: Child?
+            func start() { child = binding.watch(childSpec) }
+        }
+        """#
+        let warnings = ViewModelLint.scan([ScannerSource(path: "/Feature.swift", text: source)]).warnings
+        XCTAssertEqual(warnings.map(\.rule), Array(repeating: .cachedViewModel, count: 3))
+        XCTAssertEqual(warnings.compactMap(\.fix), [])
+        XCTAssertNil(fixed(source))
+    }
+
+    func testAliveForeverKeyFixNamesTheSpec() {
+        XCTAssertEqual(fixed(#"""
+        class Child: ViewModel {}
+        let authSpec = ViewModelSpec<Child>(aliveForever: true) { Child() }
+        let nilKeySpec = ViewModelSpec<Child>(key: nil, aliveForever: true) { Child() }
+        let userCacheSpec = ViewModelSpecWithArg<Child, String>(
+            builder: { _ in Child() },
+            aliveForever: { _ in true }
+        )
+        let pairSpec = ViewModelSpecWithArg2<Child, String, Int>(builder: { _, _ in Child() }, aliveForever: { _, _ in true })
+        """#), #"""
+        class Child: ViewModel {}
+        let authSpec = ViewModelSpec<Child>(key: "auth", aliveForever: true) { Child() }
+        let nilKeySpec = ViewModelSpec<Child>(key: "nilKey", aliveForever: true) { Child() }
+        let userCacheSpec = ViewModelSpecWithArg<Child, String>(
+            builder: { _ in Child() },
+            key: { "userCache-\($0)" },
+            aliveForever: { _ in true }
+        )
+        let pairSpec = ViewModelSpecWithArg2<Child, String, Int>(builder: { _, _ in Child() }, key: { "pair-\($0)-\($1)" }, aliveForever: { _, _ in true })
+        """#)
+    }
+
+    func testFixedSourcesRescanWithoutFixableWarnings() throws {
+        let sources = [ScannerSource(path: "/Feature.swift", text: """
+        class Child: ViewModel {}
+        let childSpec = ViewModelSpec<Child> { Child() }
+        let retainedSpec = ViewModelSpec<Child>(aliveForever: true) { Child() }
+        final class Host {
+            let binding = ViewModelBinding()
+            lazy var child = binding.read(childSpec)
+        }
+        """)]
+        let once = ViewModelLint.fix(sources)
+        XCTAssertEqual(once.count, 1)
+        XCTAssertEqual(ViewModelLint.scan(once).warnings, [])
+        XCTAssertTrue(ViewModelLint.fix(once).isEmpty)
+    }
+
     func testInvocationCompatibilityAndValidation() throws {
         let legacy = try ScannerInvocation(arguments: ["--output", "/out.swift", "/Source with spaces.swift"])
         XCTAssertFalse(legacy.lint)
@@ -286,7 +370,12 @@ final class ViewModelLintTests: XCTestCase {
         let lint = try ScannerInvocation(arguments: ["--lint", "--config", "/config.json", "--output", "/out.swift"])
         XCTAssertTrue(lint.lint)
         XCTAssertEqual(lint.configurationPath, "/config.json")
-        for args in [[], ["--output"], ["--output", "--lint"], ["--output", "/out", "--bad"], ["--output", "/out", "--config", "/config"]] {
+        let fix = try ScannerInvocation(arguments: ["--lint", "--fix", "/Source.swift"])
+        XCTAssertTrue(fix.fix)
+        XCTAssertNil(fix.output)
+        XCTAssertFalse(legacy.fix)
+        for args in [[], ["--output"], ["--output", "--lint"], ["--output", "/out", "--bad"], ["--output", "/out", "--config", "/config"],
+                     ["--fix", "/Source.swift"], ["--fix", "--output", "/out"]] {
             XCTAssertThrowsError(try ScannerInvocation(arguments: args)) { error in
                 XCTAssertTrue(String(describing: error).contains("usage:"))
             }
