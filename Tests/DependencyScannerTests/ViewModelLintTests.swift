@@ -345,6 +345,52 @@ final class ViewModelLintTests: XCTestCase {
         """#)
     }
 
+    func testCachedViewModelFixReadsTheSpecTypeAnnotation() {
+        XCTAssertEqual(fixed(#"""
+        class Child: ViewModel {}
+        let annotatedSpec: ViewModelSpec<Child> = .init { Child() }
+        let memberSpec: AppleViewModel.ViewModelSpec<Child> = .init { Child() }
+        let optionalSpec: ViewModelSpec<Child>? = .init { Child() }
+        final class Host {
+            let binding = ViewModelBinding()
+            lazy var annotated = binding.read(annotatedSpec)
+            lazy var member = binding.read(memberSpec)
+            lazy var optional = binding.read(optionalSpec)
+        }
+        """#), #"""
+        class Child: ViewModel {}
+        let annotatedSpec: ViewModelSpec<Child> = .init { Child() }
+        let memberSpec: AppleViewModel.ViewModelSpec<Child> = .init { Child() }
+        let optionalSpec: ViewModelSpec<Child>? = .init { Child() }
+        final class Host {
+            let binding = ViewModelBinding()
+            var annotated: Child { binding.read(annotatedSpec) }
+            var member: Child { binding.read(memberSpec) }
+            var optional: Child { binding.read(optionalSpec) }
+        }
+        """#)
+    }
+
+    func testAliveForeverKeyFixFallsBackToTheViewModelType() {
+        XCTAssertEqual(fixed(#"""
+        class Child: ViewModel {}
+        final class OAuth2Session: ViewModel {}
+        let Spec = ViewModelSpec<Child>(aliveForever: true) { Child() }
+        func setUp() {
+            register(ViewModelSpec<OAuth2Session>(aliveForever: true) { OAuth2Session() })
+            register(ViewModelSpec(aliveForever: true) { Child() })
+        }
+        """#), #"""
+        class Child: ViewModel {}
+        final class OAuth2Session: ViewModel {}
+        let Spec = ViewModelSpec<Child>(key: "child", aliveForever: true) { Child() }
+        func setUp() {
+            register(ViewModelSpec<OAuth2Session>(key: "oAuth2Session", aliveForever: true) { OAuth2Session() })
+            register(ViewModelSpec(key: "viewModel", aliveForever: true) { Child() })
+        }
+        """#)
+    }
+
     func testFixedSourcesRescanWithoutFixableWarnings() throws {
         let sources = [ScannerSource(path: "/Feature.swift", text: """
         class Child: ViewModel {}
