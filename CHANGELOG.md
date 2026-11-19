@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-19
+
 ### Fixed
 
 - Fix a main-thread hang when many bindings own the same ViewModel that has
