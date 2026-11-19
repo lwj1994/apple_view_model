@@ -14,8 +14,20 @@ final class ViewModelDependencyBinding: ViewModelBinding {
         }
     }
 
+    private struct PropagatedOwner {
+        let binding: ViewModelBinding
+        let order: Int
+    }
+
     private weak var parent: ViewModel?
-    private var propagatedOwners: [ViewModelBinding] = []
+    /// Root owners mirrored onto every dependency. Keyed by identity so
+    /// membership checks and removals stay O(1): a shared ViewModel can be owned
+    /// by thousands of list cells. `order` keeps the parent's owner order.
+    private var propagatedOwners: [ObjectIdentifier: PropagatedOwner] = [:]
+    private var nextPropagationOrder = 0
+    /// Parent owner revision `propagatedOwners` reflects; nil until the first
+    /// change, because construction may have used the building binding.
+    private var syncedRevision: Int?
     private var dependencies: [ObjectIdentifier: DependencyEntry] = [:]
     private var removeOwnerListener: (() -> Void)?
     private var dependencyDisposed = false
@@ -29,7 +41,7 @@ final class ViewModelDependencyBinding: ViewModelBinding {
         self.parent = parent
         super.init()
 
-        propagatedOwners = parentHandler.constructionExternalOwners
+        for owner in parentHandler.constructionExternalOwners { insertPropagated(owner) }
         installDependencyHooks(
             attaching: { [weak self] _, viewModel in
                 try self?.requireAcyclicDependency(viewModel)
@@ -45,9 +57,10 @@ final class ViewModelDependencyBinding: ViewModelBinding {
             }
         )
         registerViewModelConstructionRollback { [weak self] in self?.dispose() }
-        removeOwnerListener = parentHandler.addOwnerChangeListener { [weak self, weak parentHandler] _, _, _ in
+        removeOwnerListener = parentHandler.addOwnerDeltaListener {
+            [weak self, weak parentHandler] revision, owner, added in
             guard let self, let parentHandler else { return }
-            self.syncOwners(parentHandler.externalOwners)
+            self.ownersChanged(parentHandler, revision: revision, owner: owner, added: added)
         }
     }
 
@@ -83,7 +96,7 @@ final class ViewModelDependencyBinding: ViewModelBinding {
         dependencies[ObjectIdentifier(handle)] = entry
         return { [weak self] in
             guard let self else { return }
-            for owner in Array(self.propagatedOwners) {
+            for owner in self.orderedPropagatedOwners {
                 self.attachOwner(entry, owner: owner)
             }
         }
@@ -91,7 +104,7 @@ final class ViewModelDependencyBinding: ViewModelBinding {
 
     private func handleDetached(_ handle: any _AnyHandle) -> (() -> Void)? {
         guard let entry = dependencies.removeValue(forKey: ObjectIdentifier(handle)) else { return nil }
-        let owners = propagatedOwners
+        let owners = orderedPropagatedOwners
         return { [weak self] in
             guard let self else { return }
             for owner in owners {
@@ -136,27 +149,69 @@ final class ViewModelDependencyBinding: ViewModelBinding {
         return false
     }
 
-    private func syncOwners(_ currentOwners: [ViewModelBinding]) {
+    private var orderedPropagatedOwners: [ViewModelBinding] {
+        propagatedOwners.values.sorted { $0.order < $1.order }.map(\.binding)
+    }
+
+    private func isPropagated(_ owner: ViewModelBinding) -> Bool {
+        propagatedOwners[ObjectIdentifier(owner)] != nil
+    }
+
+    @discardableResult
+    private func insertPropagated(_ owner: ViewModelBinding) -> Bool {
+        let identity = ObjectIdentifier(owner)
+        guard propagatedOwners[identity] == nil else { return false }
+        propagatedOwners[identity] = PropagatedOwner(binding: owner, order: nextPropagationOrder)
+        nextPropagationOrder += 1
+        return true
+    }
+
+    private func ownersChanged(
+        _ parentHandler: ViewModelBindingHandler,
+        revision: Int,
+        owner: ViewModelBinding?,
+        added: Bool
+    ) {
         guard !dependencyDisposed else { return }
-        let removed = propagatedOwners.filter { owner in
-            !currentOwners.contains { $0 === owner }
+        let inStep = syncedRevision == revision - 1
+        // Record the revision before child callbacks can reenter with a newer one.
+        syncedRevision = revision
+        // A clear, or a change skipped by reentrancy, needs the full owner list.
+        guard let owner, inStep else {
+            syncOwners(parentHandler.externalOwners)
+            return
         }
-        let added = currentOwners.filter { owner in
-            !propagatedOwners.contains { $0 === owner }
+        guard !owner.isDependencyBinding else { return }
+        if added {
+            if insertPropagated(owner) { attachToDependencies(owner) }
+        } else if propagatedOwners.removeValue(forKey: ObjectIdentifier(owner)) != nil {
+            detachFromDependencies(owner)
         }
+    }
+
+    private func syncOwners(_ currentOwners: [ViewModelBinding]) {
+        let current = Set(currentOwners.map(ObjectIdentifier.init))
+        let removed = orderedPropagatedOwners.filter { !current.contains(ObjectIdentifier($0)) }
+        let added = currentOwners.filter { !isPropagated($0) }
 
         // Commit this projection before child callbacks can reenter sync.
-        propagatedOwners = currentOwners
-        for owner in removed {
-            for entry in Array(dependencies.values) {
-                guard !propagatedOwners.contains(where: { $0 === owner }) else { break }
-                detachOwner(entry, owner: owner)
-            }
+        propagatedOwners.removeAll(keepingCapacity: true)
+        for owner in currentOwners { insertPropagated(owner) }
+        for owner in removed { detachFromDependencies(owner) }
+        for owner in added { attachToDependencies(owner) }
+    }
+
+    private func attachToDependencies(_ owner: ViewModelBinding) {
+        for entry in Array(dependencies.values) {
+            attachOwner(entry, owner: owner)
         }
-        for owner in added {
-            for entry in Array(dependencies.values) {
-                attachOwner(entry, owner: owner)
-            }
+    }
+
+    private func detachFromDependencies(_ owner: ViewModelBinding) {
+        for entry in Array(dependencies.values) {
+            // A child callback may have propagated the same owner again.
+            guard !isPropagated(owner) else { break }
+            detachOwner(entry, owner: owner)
         }
     }
 
@@ -167,7 +222,7 @@ final class ViewModelDependencyBinding: ViewModelBinding {
             !entry.viewModel.isDisposed,
             !owner.isDisposed,
             dependencies[ObjectIdentifier(entry.handle)] === entry,
-            propagatedOwners.contains(where: { $0 === owner })
+            isPropagated(owner)
         else { return }
         // The synchronous preflight above covers bindOwner's rejection cases.
         try? entry.handle.bindOwnerAny(owner, source: entry)

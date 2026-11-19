@@ -9,15 +9,30 @@ public final class ViewModelBindingHandler {
         var sources: Set<ObjectIdentifier>
     }
 
+    /// A diagnostics listener receives the full owner snapshot; a dependency
+    /// binding receives only the owner that changed, because a shared ViewModel
+    /// can be owned by thousands of list cells.
+    private enum OwnerListener {
+        case snapshot(([String], String?, String?) throws -> Void)
+        case delta((Int, ViewModelBinding?, Bool) -> Void)
+    }
+
     private struct OwnerListenerEntry {
         let id: UUID
-        let callback: ([String], String?, String?) throws -> Void
+        let listener: OwnerListener
     }
 
     private var refSources: [ObjectIdentifier: OwnerEntry] = [:]
     private var nextOwnerOrder = 0
     private var ownerRevision = 0
     private var ownerChangeListeners: [OwnerListenerEntry] = []
+    private var snapshotListenerCount = 0
+
+    /// Primary owner id for diagnostics listeners only. Finding it scans every
+    /// owner, so it is not computed per change when nobody reads it.
+    private var primaryOwnerForDiagnostics: String? {
+        snapshotListenerCount == 0 ? nil : primaryOwner?.id
+    }
 
     public init() {}
 
@@ -61,10 +76,33 @@ public final class ViewModelBindingHandler {
     public func addOwnerChangeListener(
         _ listener: @escaping ([String], String?, String?) throws -> Void
     ) -> () -> Void {
+        addListener(.snapshot(listener))
+    }
+
+    /// Adds an incremental owner listener for dependency bindings.
+    ///
+    /// The callback receives this handler's ownership revision for the change,
+    /// the single binding that was added (`added == true`) or removed, or nil
+    /// when several owners changed at once. A listener that has seen every
+    /// previous revision can apply the change directly; otherwise it must
+    /// resynchronize from `externalOwners`.
+    @discardableResult
+    func addOwnerDeltaListener(
+        _ listener: @escaping (_ revision: Int, _ owner: ViewModelBinding?, _ added: Bool) -> Void
+    ) -> () -> Void {
+        addListener(.delta(listener))
+    }
+
+    private func addListener(_ listener: OwnerListener) -> () -> Void {
         let id = UUID()
-        ownerChangeListeners.append(OwnerListenerEntry(id: id, callback: listener))
+        ownerChangeListeners.append(OwnerListenerEntry(id: id, listener: listener))
+        if case .snapshot = listener { snapshotListenerCount += 1 }
         return { [weak self] in
-            self?.ownerChangeListeners.removeAll { $0.id == id }
+            guard let self,
+                  let index = self.ownerChangeListeners.firstIndex(where: { $0.id == id })
+            else { return }
+            self.ownerChangeListeners.remove(at: index)
+            if case .snapshot = listener { self.snapshotListenerCount -= 1 }
         }
     }
 
@@ -76,7 +114,7 @@ public final class ViewModelBindingHandler {
     /// Commit without calling user code. The handle publishes only after both
     /// ownership ledgers agree.
     func commitAddRef(_ binding: ViewModelBinding, source: AnyObject? = nil) -> (() -> Void)? {
-        let previousPrimaryOwner = primaryOwner?.id
+        let previousPrimaryOwner = primaryOwnerForDiagnostics
         let bindingIdentity = ObjectIdentifier(binding)
         let sourceIdentity = ObjectIdentifier(source ?? binding)
         var entry: OwnerEntry
@@ -89,7 +127,9 @@ public final class ViewModelBindingHandler {
         guard entry.sources.insert(sourceIdentity).inserted else { return nil }
         let isFirstSource = entry.sources.count == 1
         refSources[bindingIdentity] = entry
-        return isFirstSource ? ownerChange(previousPrimaryOwner: previousPrimaryOwner) : nil
+        return isFirstSource
+            ? ownerChange(previousPrimaryOwner: previousPrimaryOwner, owner: binding, added: true)
+            : nil
     }
 
     @_spi(Internal)
@@ -98,7 +138,7 @@ public final class ViewModelBindingHandler {
     }
 
     func commitRemoveRef(_ binding: ViewModelBinding, source: AnyObject? = nil) -> (() -> Void)? {
-        let previousPrimaryOwner = primaryOwner?.id
+        let previousPrimaryOwner = primaryOwnerForDiagnostics
         let bindingIdentity = ObjectIdentifier(binding)
         let sourceIdentity = ObjectIdentifier(source ?? binding)
         guard var entry = refSources[bindingIdentity] else { return nil }
@@ -108,22 +148,31 @@ public final class ViewModelBindingHandler {
             return nil
         }
         refSources.removeValue(forKey: bindingIdentity)
-        return ownerChange(previousPrimaryOwner: previousPrimaryOwner)
+        return ownerChange(previousPrimaryOwner: previousPrimaryOwner, owner: binding, added: false)
     }
 
     func commitClearRefs() -> (() -> Void)? {
         guard !refSources.isEmpty else { return nil }
-        let previousPrimaryOwner = primaryOwner?.id
+        let previousPrimaryOwner = primaryOwnerForDiagnostics
         refSources.removeAll()
-        return ownerChange(previousPrimaryOwner: previousPrimaryOwner)
+        return ownerChange(previousPrimaryOwner: previousPrimaryOwner, owner: nil, added: false)
     }
 
-    private func ownerChange(previousPrimaryOwner: String?) -> () -> Void {
+    private func ownerChange(
+        previousPrimaryOwner: String?,
+        owner: ViewModelBinding?,
+        added: Bool
+    ) -> () -> Void {
         ownerRevision += 1
         let revision = ownerRevision
         return { [weak self] in
             guard let self, revision == self.ownerRevision else { return }
-            self.notifyOwnerChanges(previousPrimaryOwner: previousPrimaryOwner, revision: revision)
+            self.notifyOwnerChanges(
+                previousPrimaryOwner: previousPrimaryOwner,
+                revision: revision,
+                owner: owner,
+                added: added
+            )
         }
     }
 
@@ -131,6 +180,7 @@ public final class ViewModelBindingHandler {
     public func dispose() {
         commitClearRefs()?()
         ownerChangeListeners.removeAll()
+        snapshotListenerCount = 0
     }
 
     @_spi(Internal)
@@ -142,10 +192,17 @@ public final class ViewModelBindingHandler {
         )
     }
 
-    private func notifyOwnerChanges(previousPrimaryOwner: String?, revision: Int) {
+    private func notifyOwnerChanges(
+        previousPrimaryOwner: String?,
+        revision: Int,
+        owner: ViewModelBinding?,
+        added: Bool
+    ) {
         guard !ownerChangeListeners.isEmpty else { return }
-        let ownerIds = owners.map(\.id)
-        let currentPrimaryOwner = primaryOwner?.id
+        // Built only for diagnostics listeners: sorting the owners per change
+        // would make every owner change O(owners log owners).
+        var ownerIds: [String]?
+        let currentPrimaryOwner = primaryOwnerForDiagnostics
         let snapshot = ownerChangeListeners
         for entry in snapshot {
             // A callback may commit and publish a newer transition. Stop the
@@ -155,7 +212,14 @@ public final class ViewModelBindingHandler {
                 continue
             }
             do {
-                try entry.callback(ownerIds, previousPrimaryOwner, currentPrimaryOwner)
+                switch entry.listener {
+                case .delta(let callback):
+                    callback(revision, owner, added)
+                case .snapshot(let callback):
+                    let ids = ownerIds ?? owners.map(\.id)
+                    ownerIds = ids
+                    try callback(ids, previousPrimaryOwner, currentPrimaryOwner)
+                }
             } catch {
                 reportViewModelError(
                     error,

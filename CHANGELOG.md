@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- Fix a main-thread hang when many bindings own the same ViewModel that has
+  dependencies, for example every cell of a long list reading one shared
+  ViewModel. Each owner change used to resynchronize every dependency against
+  the full owner list (quadratic in the owner count, repeated per dependency
+  level) and to scan every owner for the primary owner, so binding or releasing
+  thousands of cells could block the main thread for minutes in debug builds.
+  Dependency bindings now apply the single added or removed owner
+  incrementally with identity-keyed lookups, falling back to a full resync only
+  when a change was skipped by reentrancy or all owners were cleared at once.
+  Owner snapshots and primary-owner ids are computed only for diagnostics
+  listeners. Ownership semantics and lifecycle order are unchanged (aligned
+  with Flutter `view_model` 1.3.4).
+
 ## [0.13.0] - 2026-10-28
 
 ### Added
